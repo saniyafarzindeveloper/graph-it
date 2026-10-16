@@ -62,3 +62,21 @@ body {
   color: var(--app-fg);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--app-border) !important;
+  border-radius: 6px;
+  box-shadow: none !important;
+  background: var(--app-panel) !important;
+}
+
+.react-flow__controls-button {
+  border-bottom: 1px solid var(--app-border) !important;
+  background: var(--app-panel) !important;
+  fill: var(--app-muted) !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--app-hover) !important;
+}
