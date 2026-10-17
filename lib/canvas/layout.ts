@@ -18,12 +18,14 @@ export interface CanvasNodeData extends Record<string, unknown> {
   hiddenFileCount: number;
   selectedFile: string | null;
   selectedFolder: boolean;
-  hasSelection: boolean;
+  hasFocus: boolean;
   highlightedFilePaths: string[];
-  hiddenFilesHighlighted: boolean;
+  hoveredFilePaths: string[];
+  hoveredFolder: boolean;
   categoryColors: Record<string, string>;
   dimmed: boolean;
   onSelectFile: (filePath: string) => void;
+  onHover: (target: CanvasSelection) => void;
 }
 
 export interface CanvasEdgeData extends Record<string, unknown> {
@@ -50,7 +52,7 @@ function flowNodeId(folderId: string): string {
 
 function endpointHandle(folder: FoldedFolder, expanded: boolean, filePath: string, type: "in" | "out"): string {
   if (!expanded) return type;
-  const isVisible = folder.files.slice(0, MAX_VISIBLE_FILES).some((file) => file.path === filePath);
+  const isVisible = folder.files.some((file) => file.path === filePath);
   return isVisible ? `${type}:${filePath}` : `${type}:more`;
 }
 
@@ -65,11 +67,14 @@ export function createCanvasLayout(
   rawEdges: RepoEdge[],
   expandedFolders: Set<string>,
   selection: CanvasSelection,
+  hovered: CanvasSelection,
   onSelectFile: (filePath: string) => void,
+  onHover: (target: CanvasSelection) => void,
   categoryColors: Record<string, string>,
 ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const primaryFiles = getSelectionFiles(selection, folded);
-  const activeFiles = new Set(primaryFiles);
+  const hoveredFiles = getSelectionFiles(hovered, folded);
+  const activeFiles = new Set([...primaryFiles, ...hoveredFiles]);
   const eligibleEdges = rawEdges.filter(
     (edge) => edge.resolution === "inside" && folded.fileToNode.has(edge.source) && folded.fileToNode.has(edge.target),
   );
@@ -77,6 +82,8 @@ export function createCanvasLayout(
   for (const edge of eligibleEdges) {
     if (primaryFiles.has(edge.source)) activeFiles.add(edge.target);
     if (primaryFiles.has(edge.target)) activeFiles.add(edge.source);
+    if (hoveredFiles.has(edge.source)) activeFiles.add(edge.target);
+    if (hoveredFiles.has(edge.target)) activeFiles.add(edge.source);
   }
 
   const activeNodes = new Set<string>();
@@ -88,10 +95,9 @@ export function createCanvasLayout(
   const nodeSizes = new Map<string, { width: number; height: number }>();
   for (const folder of folded.nodes) {
     const expanded = expandedFolders.has(folder.id);
-    const visibleCount = Math.min(folder.files.length, MAX_VISIBLE_FILES);
     const width = expanded ? 300 : Math.max(156, Math.min(276, folder.label.length * 7.5 + 58));
     const height = expanded
-      ? 76 + visibleCount * 25 + (folder.files.length > MAX_VISIBLE_FILES ? 27 : 0)
+      ? 76 + Math.min(folder.files.length * 25, 244) + (folder.files.length > MAX_VISIBLE_FILES ? 27 : 0) + 10
       : 54 + Math.min(folder.fanIn, 18) * 3;
     nodeSizes.set(folder.id, { width, height });
   }
@@ -143,16 +149,18 @@ export function createCanvasLayout(
       data: {
         folder,
         expanded,
-        visibleFiles: folder.files.slice(0, MAX_VISIBLE_FILES),
+        visibleFiles: folder.files,
         hiddenFileCount: Math.max(0, folder.files.length - MAX_VISIBLE_FILES),
         selectedFile: selection?.kind === "file" ? selection.id : null,
         selectedFolder: selection?.kind === "folder" && selection.id === folder.id,
-        hasSelection: selection !== null,
+        hasFocus: selection !== null || hovered !== null,
         highlightedFilePaths: folder.files.filter((file) => activeFiles.has(file.path)).map((file) => file.path),
-        hiddenFilesHighlighted: folder.files.slice(MAX_VISIBLE_FILES).some((file) => activeFiles.has(file.path)),
+        hoveredFilePaths: folder.files.filter((file) => hoveredFiles.has(file.path)).map((file) => file.path),
+        hoveredFolder: hovered?.kind === "folder" && hovered.id === folder.id,
         categoryColors,
-        dimmed: selection !== null && !activeNodes.has(folder.id),
+        dimmed: (selection !== null || hovered !== null) && !activeNodes.has(folder.id),
         onSelectFile,
+        onHover,
       },
       zIndex: activeNodes.has(folder.id) ? 2 : 1,
     };
@@ -202,8 +210,10 @@ export function createCanvasLayout(
   const edges: CanvasEdge[] = edgeRows.map((row, index) => {
     const sourceExpanded = expandedFolders.has(row.sourceNode);
     const targetExpanded = expandedFolders.has(row.targetNode);
-    const highlighted = primaryFiles.has(row.sourceFile) || primaryFiles.has(row.targetFile);
-    const outbound = primaryFiles.has(row.sourceFile);
+    const highlighted =
+      primaryFiles.has(row.sourceFile) || primaryFiles.has(row.targetFile) ||
+      hoveredFiles.has(row.sourceFile) || hoveredFiles.has(row.targetFile);
+    const outbound = primaryFiles.has(row.sourceFile) || hoveredFiles.has(row.sourceFile);
     const color = highlighted ? outbound ? "#d97706" : "#15803d" : "#71717a";
     return {
       id: `edge:${row.sourceNode}:${row.targetNode}:${row.kind}:${row.sourceFile}:${row.targetFile}:${index}`,
@@ -229,10 +239,10 @@ export function createCanvasLayout(
       style: {
         stroke: color,
         strokeWidth: highlighted ? 2 : Math.min(1.4 + Math.log2(row.count), 4),
-        opacity: selection !== null && !highlighted ? 0.12 : 0.62,
+        opacity: (selection !== null || hovered !== null) && !highlighted ? 0.12 : 0.62,
       },
       zIndex: highlighted ? 2 : 0,
-      data: { kind: row.kind, count: row.count, dimmed: selection !== null && !highlighted },
+      data: { kind: row.kind, count: row.count, dimmed: (selection !== null || hovered !== null) && !highlighted },
     };
   });
 

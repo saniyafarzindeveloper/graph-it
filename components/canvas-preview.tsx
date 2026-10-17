@@ -41,9 +41,10 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
     visibleFiles,
     hiddenFileCount,
     selectedFile,
-    hasSelection,
+    hasFocus,
     highlightedFilePaths,
-    hiddenFilesHighlighted,
+    hoveredFilePaths,
+    hoveredFolder,
     categoryColors,
   } = data;
   const selectedFolder = data.selectedFolder;
@@ -53,7 +54,7 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
     <div
       className={[
         "relative h-full w-full overflow-hidden rounded-md border bg-(--app-panel) text-foreground shadow-sm",
-        selectedFolder ? "border-sky-400 ring-1 ring-sky-400/50" : "border-(--app-border)",
+        selectedFolder || hoveredFolder ? "border-sky-400 ring-1 ring-sky-400/50" : "border-(--app-border)",
         data.dimmed ? "opacity-20" : "opacity-100",
       ].join(" ")}
       title={folder.folder}
@@ -81,7 +82,16 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
 
       {expanded ? (
         <div className="border-t border-(--app-border) px-2 pb-2">
-          <div className="max-h-61 overflow-y-auto">
+          {hiddenFileCount > 0 ? (
+            <div className="px-2 py-1.5 text-[10px] text-(--app-muted)">
+              {hiddenFileCount} additional files below
+            </div>
+          ) : null}
+          <div
+            aria-label={`${folder.label} files`}
+            className="nowheel nodrag nopan max-h-61 overflow-y-auto overscroll-contain"
+            tabIndex={0}
+          >
             {visibleFiles.map((file: RepoFile) => {
               const selected = selectedFile === file.path;
               return (
@@ -98,16 +108,19 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
                     className={[
                       "nodrag nopan flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left font-mono text-[10px]",
                       selected ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground",
-                      hasSelection && !highlightedFiles.has(file.path) ? "opacity-25" : "opacity-100",
+                      hasFocus && !highlightedFiles.has(file.path) ? "opacity-25" : "opacity-100",
+                      hoveredFilePaths.includes(file.path) ? "bg-sky-500/15 text-sky-300" : "",
                     ].join(" ")}
                     onClick={(event) => {
                       event.stopPropagation();
                       data.onSelectFile(file.path);
                     }}
+                    onMouseEnter={() => data.onHover({ kind: "file", id: file.path })}
+                    onMouseLeave={() => data.onHover({ kind: "folder", id: folder.id })}
                   >
                     <span
                       className="h-1.5 w-1.5 shrink-0 rounded-sm"
-                      style={{ backgroundColor: categoryColors[file.extension] ?? "#a1a1aa" }}
+                      style={{ backgroundColor: categoryColors?.[file.extension] ?? "#a1a1aa" }}
                       aria-hidden="true"
                     />
                     <span className="truncate">{file.path.slice(folder.folder === "." ? 0 : folder.folder.length + 1)}</span>
@@ -121,16 +134,6 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
                 </div>
               );
             })}
-            {hiddenFileCount > 0 ? (
-              <div onClick={(event) => event.stopPropagation()} className={[
-                "relative flex h-6.75 items-center px-2 text-[10px] text-(--app-muted)",
-                hasSelection && !hiddenFilesHighlighted ? "opacity-25" : "opacity-100",
-              ].join(" ")}>
-                <Handle type="target" id="in:more" position={Position.Left} className="h-1.5! w-1.5! border-0! bg-emerald-500!" />
-                + {hiddenFileCount} more files
-                <Handle type="source" id="out:more" position={Position.Right} className="h-1.5! w-1.5! border-0! bg-amber-500!" />
-              </div>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -143,6 +146,7 @@ const nodeTypes: NodeTypes = { folder: FolderNode };
 function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, threshold }: CanvasPreviewProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [selection, setSelection] = useState<CanvasSelection>(null);
+  const [hovered, setHovered] = useState<CanvasSelection>(null);
   const previousExpandedCount = useRef(0);
   const { fitView, getZoom } = useReactFlow<CanvasNode, CanvasEdge>();
   const folded = useMemo(
@@ -165,17 +169,29 @@ function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, thresh
   }, []);
 
   const selectFile = useCallback((filePath: string) => {
+    const folderId = folded.fileToNode.get(filePath);
+    if (folderId) {
+      setExpandedFolders((current) => current.has(folderId) ? current : new Set([...current, folderId]));
+    }
     setSelection({ kind: "file", id: filePath });
-  }, []);
+  }, [folded]);
 
   const graph = useMemo(
-    () => createCanvasLayout(folded, edges, expandedFolders, selection, selectFile, categoryColors),
-    [folded, edges, expandedFolders, selection, selectFile, categoryColors],
+    () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors),
+    [folded, edges, expandedFolders, selection, hovered, selectFile, categoryColors],
   );
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
     toggleFolder(node.data.folder.id);
   }, [toggleFolder]);
+
+  const handleNodeMouseEnter = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
+    setHovered({ kind: "folder", id: node.data.folder.id });
+  }, []);
+
+  const handleNodeMouseLeave = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
+    setHovered((current) => current?.kind === "folder" && current.id === node.data.folder.id ? null : current);
+  }, []);
 
   useEffect(() => {
     const openedFolder = expandedFolders.size > previousExpandedCount.current;
@@ -213,6 +229,12 @@ function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, thresh
           edges={graph.edges}
           nodeTypes={nodeTypes}
           onNodeClick={handleNodeClick}
+          onNodeMouseEnter={handleNodeMouseEnter}
+          onNodeMouseLeave={handleNodeMouseLeave}
+          onPaneClick={() => {
+            setSelection(null);
+            setHovered(null);
+          }}
           fitView
           fitViewOptions={{ padding: 0.18, minZoom: 0.12, maxZoom: 1.05 }}
           minZoom={0.12}
@@ -221,7 +243,7 @@ function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, thresh
           nodesConnectable={false}
           elementsSelectable={false}
           defaultEdgeOptions={{ type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed } }}
-          proOptions={{ hideAttribution: false }}
+          proOptions={{ hideAttribution: true }}
         >
           <Background color="var(--app-border)" gap={22} size={1} />
           <Controls showInteractive={false} position="bottom-left" />
