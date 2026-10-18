@@ -16,7 +16,8 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createCanvasLayout, type CanvasEdge, type CanvasNode, type CanvasSelection } from "@/lib/canvas/layout";
 import type { FoldedFolder } from "@/lib/canvas/folding";
-import type { RepoEdge, RepoFile } from "@/lib/repo-parser/index";
+import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index";
+import { CanvasDetailPane, type DetailTab } from "@/components/canvas-detail-pane";
 
 export interface FileCategory {
   id: string;
@@ -32,6 +33,10 @@ interface CanvasPreviewProps {
   edges: RepoEdge[];
   categories: FileCategory[];
   threshold: number;
+  coverage: CoverageReport;
+  framework: string | null;
+  routeCount: number | null;
+  unclassifiedCount: number | null;
 }
 
 function FolderNode({ data }: NodeProps<CanvasNode>) {
@@ -54,7 +59,7 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
     <div
       className={[
         "relative h-full w-full overflow-hidden rounded-md border bg-(--app-panel) text-foreground shadow-sm",
-        selectedFolder || hoveredFolder ? "border-sky-400 ring-1 ring-sky-400/50" : "border-(--app-border)",
+        selectedFolder || hoveredFolder || hoveredFilePaths.length > 0 ? "border-sky-400 ring-1 ring-sky-400/50" : "border-(--app-border)",
         data.dimmed ? "opacity-20" : "opacity-100",
       ].join(" ")}
       title={folder.folder}
@@ -143,10 +148,22 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
 
 const nodeTypes: NodeTypes = { folder: FolderNode };
 
-function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, threshold }: CanvasPreviewProps) {
+function CanvasStage({
+  repoLabel,
+  folders,
+  fileToNode,
+  edges,
+  categories,
+  threshold,
+  coverage,
+  framework,
+  routeCount,
+  unclassifiedCount,
+}: CanvasPreviewProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
   const [selection, setSelection] = useState<CanvasSelection>(null);
   const [hovered, setHovered] = useState<CanvasSelection>(null);
+  const [activeTab, setActiveTab] = useState<DetailTab>("structure");
   const previousExpandedCount = useRef(0);
   const { fitView, getZoom } = useReactFlow<CanvasNode, CanvasEdge>();
   const folded = useMemo(
@@ -156,6 +173,16 @@ function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, thresh
   const categoryColors = useMemo(
     () => Object.fromEntries(categories.map((category) => [category.id, category.color])),
     [categories],
+  );
+
+  const allFiles = useMemo(() => folders.flatMap((folder) => folder.files), [folders]);
+  const selectedFile = useMemo(
+    () => selection?.kind === "file" ? allFiles.find((file) => file.path === selection.id) ?? null : null,
+    [allFiles, selection],
+  );
+  const selectedFolder = useMemo(
+    () => selection?.kind === "folder" ? folders.find((folder) => folder.id === selection.id) ?? null : null,
+    [folders, selection],
   );
 
   const toggleFolder = useCallback((folderId: string) => {
@@ -250,9 +277,23 @@ function CanvasStage({ repoLabel, folders, fileToNode, edges, categories, thresh
         </ReactFlow>
       </section>
 
-      <aside aria-label="Details" className="min-h-28 rounded-md border border-(--app-border) bg-(--app-panel) p-3 lg:min-h-0">
-        <h2 className="text-xs font-semibold text-(--app-muted)">Details</h2>
-      </aside>
+      <CanvasDetailPane
+        repoName={repoLabel}
+        files={allFiles}
+        edges={edges}
+        coverage={coverage}
+        framework={framework}
+        routeCount={routeCount}
+        unclassifiedCount={unclassifiedCount}
+        fileToNode={folded.fileToNode}
+        hovered={hovered}
+        selectedFile={selectedFile}
+        selectedFolder={selectedFolder}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        onSelectFile={selectFile}
+        onHover={setHovered}
+      />
     </main>
   );
 }

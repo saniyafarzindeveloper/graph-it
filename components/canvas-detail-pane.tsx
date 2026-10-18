@@ -15,6 +15,7 @@ interface CanvasDetailPaneProps {
   framework: string | null;
   routeCount: number | null;
   unclassifiedCount: number | null;
+  fileToNode: Map<string, string>;
   hovered: CanvasSelection;
   selectedFile: RepoFile | null;
   selectedFolder: FoldedFolder | null;
@@ -78,7 +79,7 @@ function PathList({
   title,
   paths,
   selectedPath,
-  hovered,
+  isHovered,
   emptyLabel,
   onSelectFile,
   onHover,
@@ -86,7 +87,7 @@ function PathList({
   title: string;
   paths: string[];
   selectedPath: string | null;
-  hovered: CanvasSelection;
+  isHovered: (filePath: string) => boolean;
   emptyLabel: string;
   onSelectFile: (filePath: string) => void;
   onHover: (target: CanvasSelection) => void;
@@ -104,7 +105,7 @@ function PathList({
               <PathButton
                 filePath={filePath}
                 selected={selectedPath === filePath}
-                hovered={hovered?.kind === "file" && hovered.id === filePath}
+                hovered={isHovered(filePath)}
                 onSelect={onSelectFile}
                 onHover={onHover}
               />
@@ -126,6 +127,7 @@ export function CanvasDetailPane({
   framework,
   routeCount,
   unclassifiedCount,
+  fileToNode,
   hovered,
   selectedFile,
   selectedFolder,
@@ -134,6 +136,10 @@ export function CanvasDetailPane({
   onSelectFile,
   onHover,
 }: CanvasDetailPaneProps) {
+  const isHovered = (filePath: string) =>
+    hovered?.kind === "file"
+      ? hovered.id === filePath
+      : hovered?.kind === "folder" && fileToNode.get(filePath) === hovered.id;
   const fileByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const topDependedOn = useMemo(
     () => [...files].filter((file) => file.fanIn > 0).sort((left, right) => right.fanIn - left.fanIn || left.path.localeCompare(right.path)).slice(0, 8),
@@ -181,7 +187,7 @@ export function CanvasDetailPane({
       : null;
 
   return (
-    <aside aria-label="Details" className="flex min-h-0 flex-col overflow-hidden rounded-md border border-(--app-border) bg-(--app-panel)">
+    <aside aria-label="Details" className="flex max-h-[60svh] min-h-28 flex-col overflow-hidden rounded-md lg:max-h-none lg:min-h-0 border border-(--app-border) bg-(--app-panel)">
       <header className="border-b border-(--app-border) p-3">
         <div className="truncate font-mono text-xs font-semibold text-foreground" title={repoName}>{repoName}</div>
         <div role="tablist" aria-label="Detail view" className="mt-3 flex gap-1">
@@ -225,7 +231,7 @@ export function CanvasDetailPane({
               title="Imports"
               paths={fileRelations.imports}
               selectedPath={selectedFile.path}
-              hovered={hovered}
+              isHovered={isHovered}
               emptyLabel="No in-repository imports"
               onSelectFile={onSelectFile}
               onHover={onHover}
@@ -234,7 +240,7 @@ export function CanvasDetailPane({
               title="Imported by"
               paths={fileRelations.dependents}
               selectedPath={selectedFile.path}
-              hovered={hovered}
+              isHovered={isHovered}
               emptyLabel="No files import this file"
               onSelectFile={onSelectFile}
               onHover={onHover}
@@ -277,7 +283,7 @@ export function CanvasDetailPane({
               title="Files"
               paths={selectedFolder.files.map((file) => file.path)}
               selectedPath={null}
-              hovered={hovered}
+              isHovered={isHovered}
               emptyLabel="No files"
               onSelectFile={onSelectFile}
               onHover={onHover}
@@ -291,13 +297,13 @@ export function CanvasDetailPane({
               <Metric label="Files" value={files.length} />
               <Metric label="Imports" value={coverage.importsSeen} />
               <Metric label="Routes" value={routeCount ?? "Not analyzed"} />
-              <Metric label="Convention roles" value={unclassifiedCount ?? "Not classified"} />
+              <Metric label="Unidentified files" value={unclassifiedCount ?? "Not classified"} />
             </dl>
             <PathList
               title="Most depended on"
               paths={topDependedOn.map((file) => file.path)}
               selectedPath={null}
-              hovered={hovered}
+              isHovered={isHovered}
               emptyLabel="No incoming imports"
               onSelectFile={onSelectFile}
               onHover={onHover}
@@ -306,7 +312,7 @@ export function CanvasDetailPane({
               title="Files nothing imports"
               paths={readingStarts.map((file) => file.path)}
               selectedPath={null}
-              hovered={hovered}
+              isHovered={isHovered}
               emptyLabel="No unreferenced files"
               onSelectFile={onSelectFile}
               onHover={onHover}

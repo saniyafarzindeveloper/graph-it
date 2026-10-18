@@ -49,6 +49,10 @@ export default function PreviewPage() {
         edges={honoPreview.edges}
         categories={categories}
         threshold={folded.threshold}
+        coverage={honoPreview.coverage}
+        framework={null}
+        routeCount={null}
+        unclassifiedCount={honoPreview.files.length}
       />
     </div>
   );
