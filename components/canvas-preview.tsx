@@ -18,6 +18,7 @@ import { createCanvasLayout, type CanvasEdge, type CanvasNode, type CanvasSelect
 import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index";
 import { CanvasDetailPane, type DetailTab } from "@/components/canvas-detail-pane";
+import { analyzeRepository } from "@/lib/canvas/analysis";
 
 export interface FileCategory {
   id: string;
@@ -51,6 +52,8 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
     hoveredFilePaths,
     hoveredFolder,
     categoryColors,
+    categoryFilter,
+    categoryMatchCount,
   } = data;
   const selectedFolder = data.selectedFolder;
   const highlightedFiles = new Set(highlightedFilePaths);
@@ -58,7 +61,7 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
   return (
     <div
       className={[
-        "relative h-full w-full overflow-hidden rounded-md border bg-(--app-panel) text-foreground shadow-sm",
+        "relative h-full w-full overflow-hidden rounded-md border bg-(--app-panel) text-foreground shadow-sm transition-all duration-100",
         selectedFolder || hoveredFolder || hoveredFilePaths.length > 0 ? "border-sky-400 ring-1 ring-sky-400/50" : "border-(--app-border)",
         data.dimmed ? "opacity-20" : "opacity-100",
       ].join(" ")}
@@ -83,6 +86,9 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
           <span>in {folder.fanIn}</span>
           <span>out {folder.fanOut}</span>
         </span>
+        {expanded && categoryFilter ? (
+          <span className="mt-1 text-[10px] text-sky-300">{categoryMatchCount} / {folder.files.length} match category</span>
+        ) : null}
       </button>
 
       {expanded ? (
@@ -113,7 +119,8 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
                     className={[
                       "nodrag nopan flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left font-mono text-[10px]",
                       selected ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground",
-                      hasFocus && !highlightedFiles.has(file.path) ? "opacity-25" : "opacity-100",
+                      !categoryFilter && hasFocus && !highlightedFiles.has(file.path) ? "opacity-25" : "opacity-100",
+                      categoryFilter && file.extension !== categoryFilter ? "opacity-20" : "",
                       hoveredFilePaths.includes(file.path) ? "bg-sky-500/15 text-sky-300" : "",
                     ].join(" ")}
                     onClick={(event) => {
@@ -164,7 +171,9 @@ function CanvasStage({
   const [selection, setSelection] = useState<CanvasSelection>(null);
   const [hovered, setHovered] = useState<CanvasSelection>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>("structure");
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const previousExpandedCount = useRef(0);
+  const hoverClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { fitView, getZoom } = useReactFlow<CanvasNode, CanvasEdge>();
   const folded = useMemo(
     () => ({ nodes: folders, fileToNode: new Map(fileToNode), threshold }),
@@ -176,6 +185,19 @@ function CanvasStage({
   );
 
   const allFiles = useMemo(() => folders.flatMap((folder) => folder.files), [folders]);
+  const insights = useMemo(() => analyzeRepository(allFiles, edges), [allFiles, edges]);
+  const updateHover = useCallback((target: CanvasSelection) => {
+    if (hoverClearTimer.current) clearTimeout(hoverClearTimer.current);
+    hoverClearTimer.current = null;
+    if (target) {
+      setHovered(target);
+      return;
+    }
+    hoverClearTimer.current = setTimeout(() => {
+      setHovered(null);
+      hoverClearTimer.current = null;
+    }, 70);
+  }, []);
   const selectedFile = useMemo(
     () => selection?.kind === "file" ? allFiles.find((file) => file.path === selection.id) ?? null : null,
     [allFiles, selection],
@@ -204,8 +226,8 @@ function CanvasStage({
   }, [folded]);
 
   const graph = useMemo(
-    () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors),
-    [folded, edges, expandedFolders, selection, hovered, selectFile, categoryColors],
+    () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors, categoryFilter),
+    [folded, edges, expandedFolders, selection, hovered, selectFile, categoryColors, categoryFilter],
   );
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
@@ -213,11 +235,15 @@ function CanvasStage({
   }, [toggleFolder]);
 
   const handleNodeMouseEnter = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
-    setHovered({ kind: "folder", id: node.data.folder.id });
-  }, []);
+    updateHover({ kind: "folder", id: node.data.folder.id });
+  }, [updateHover]);
 
   const handleNodeMouseLeave = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
-    setHovered((current) => current?.kind === "folder" && current.id === node.data.folder.id ? null : current);
+    if (hovered?.kind === "folder" && hovered.id === node.data.folder.id) updateHover(null);
+  }, [hovered, updateHover]);
+
+  useEffect(() => () => {
+    if (hoverClearTimer.current) clearTimeout(hoverClearTimer.current);
   }, []);
 
   useEffect(() => {
@@ -233,15 +259,23 @@ function CanvasStage({
   }, [expandedFolders, fitView, getZoom]);
 
   return (
-    <main className="grid h-full min-h-136 grid-cols-1 gap-3 lg:grid-cols-[14rem_minmax(0,1fr)_18rem]">
+    <main className="grid h-full min-h-136 grid-cols-1 gap-3 lg:grid-cols-[minmax(14rem,16%)_minmax(0,1fr)_minmax(18rem,24%)]">
       <aside aria-label="File categories" className="min-h-28 overflow-y-auto rounded-md border border-(--app-border) bg-(--app-panel) p-3 lg:min-h-0">
         <h1 className="mb-3 text-xs font-semibold text-foreground">File categories</h1>
         <ul className="space-y-2">
           {categories.map((category) => (
-            <li key={category.id} className="flex items-center gap-2 text-xs text-(--app-muted)">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: category.color }} aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">{category.label}</span>
-              <span className="tabular-nums">{category.count}</span>
+            <li key={category.id}>
+              <button
+                type="button"
+                aria-pressed={categoryFilter === category.id}
+                title={categoryFilter === category.id ? "Clear category filter" : `Highlight ${category.label} files`}
+                onClick={() => setCategoryFilter((current) => current === category.id ? null : category.id)}
+                className={["flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs transition", categoryFilter === category.id ? "bg-sky-500/15 text-foreground" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
+              >
+                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: category.color }} aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">{category.label}</span>
+                <span className="tabular-nums">{category.count}</span>
+              </button>
             </li>
           ))}
         </ul>
@@ -260,6 +294,8 @@ function CanvasStage({
           onNodeMouseLeave={handleNodeMouseLeave}
           onPaneClick={() => {
             setSelection(null);
+            if (hoverClearTimer.current) clearTimeout(hoverClearTimer.current);
+            hoverClearTimer.current = null;
             setHovered(null);
           }}
           fitView
@@ -281,6 +317,7 @@ function CanvasStage({
         repoName={repoLabel}
         files={allFiles}
         edges={edges}
+        insights={insights}
         coverage={coverage}
         framework={framework}
         routeCount={routeCount}
@@ -292,7 +329,7 @@ function CanvasStage({
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onSelectFile={selectFile}
-        onHover={setHovered}
+        onHover={updateHover}
       />
     </main>
   );

@@ -1,4 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
+import Link from "next/link";
+import { AnalysisForm } from "@/components/analysis-form";
+import { AnalysisStatus } from "@/components/analysis-status";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export const instant = false;
@@ -10,6 +13,8 @@ type AnalysisRow = {
   summary: string | null;
   created_at: string;
   completed_at: string | null;
+  stage: string | null;
+  stage_message: string | null;
 };
 
 type AnalysesResult = {
@@ -30,7 +35,7 @@ async function getCurrentOrgAnalyses(orgId: string | null, token: string | null)
     const supabase = await getSupabaseServerClient(token);
     const { data, error } = await supabase
       .from("analyses")
-      .select("id, name, status, summary, created_at, completed_at")
+      .select("id, name, status, summary, created_at, completed_at, stage, stage_message")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -56,6 +61,7 @@ export default async function DashboardPage() {
 
   return (
     <main>
+      <AnalysisForm />
       <section className="overflow-hidden rounded-lg border border-(--app-border) bg-(--app-panel)">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-base font-semibold">Recent analyses</h1>
@@ -89,28 +95,17 @@ export default async function DashboardPage() {
                 {analyses.map((analysis) => (
                   <tr key={analysis.id} className="border-t border-(--app-border) transition-colors hover:bg-(--app-hover)/50">
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-medium text-foreground">
-                      {analysis.name}
+                      <Link href={`/analyses/${analysis.id}`} className="hover:text-sky-500">{analysis.name}</Link>
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={[
-                          "inline-flex items-center rounded border px-2 py-1 text-xs font-medium",
-                          analysis.status === "completed"
-                            ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-300"
-                            : analysis.status === "failed"
-                              ? "border-rose-400/40 bg-rose-500/10 text-rose-300"
-                              : "border-amber-400/40 bg-amber-500/10 text-amber-300",
-                        ].join(" ")}
-                      >
-                        {analysis.status === "completed" ? "complete" : analysis.status}
-                      </span>
+                      <AnalysisStatus status={analysis.status} createdAt={analysis.created_at} />
                     </td>
                     <td className={[
                       "max-w-xs px-4 py-3 text-xs",
                       analysis.status === "failed" ? "text-rose-300" : "text-(--app-muted)",
                       analysis.summary?.startsWith("Commit ") ? "font-mono" : "",
                     ].join(" ")}>
-                      {analysis.summary ?? "-"}
+                      {analysis.summary ?? analysis.stage_message ?? "-"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-xs text-(--app-muted)">
                       {new Date(analysis.created_at).toLocaleString()}

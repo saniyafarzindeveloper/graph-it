@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index";
 import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CanvasSelection } from "@/lib/canvas/layout";
+import { walkGraph, type GraphWalkMode, type RepositoryInsights } from "@/lib/canvas/analysis";
 
 export type DetailTab = "structure" | "explanation";
 
@@ -11,6 +12,7 @@ interface CanvasDetailPaneProps {
   repoName: string;
   files: RepoFile[];
   edges: RepoEdge[];
+  insights: RepositoryInsights;
   coverage: CoverageReport;
   framework: string | null;
   routeCount: number | null;
@@ -24,6 +26,13 @@ interface CanvasDetailPaneProps {
   onSelectFile: (filePath: string) => void;
   onHover: (target: CanvasSelection) => void;
 }
+
+const insightCopy = {
+  unimported: "These files have no in-repository dependents; framework and tooling entry points are left out.",
+  cycles: "These files form an import cycle.",
+  highFanIn: "These files are imported by an unusually large part of the repository.",
+  oversized: "These files are unusually long and may take longer to understand.",
+} as const;
 
 const languageNames: Record<string, string> = {
   ".ts": "TypeScript",
@@ -53,13 +62,12 @@ function PathButton({
     <button
       type="button"
       className={[
-        "block w-full truncate rounded px-2 py-1 text-left font-mono text-[10px]",
+        "block w-full truncate rounded px-2 py-1 text-left font-mono text-[10px] transition-colors duration-100",
         selected || hovered ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground",
       ].join(" ")}
       title={filePath}
       onClick={() => onSelect(filePath)}
       onMouseEnter={() => onHover({ kind: "file", id: filePath })}
-      onMouseLeave={() => onHover(null)}
     >
       {filePath}
     </button>
@@ -68,9 +76,9 @@ function PathButton({
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="border-b border-(--app-border) py-2">
+    <div className="rounded-md bg-(--app-hover)/60 px-2.5 py-2">
       <dt className="text-[10px] text-(--app-muted)">{label}</dt>
-      <dd className="mt-0.5 truncate text-xs font-medium text-foreground">{value}</dd>
+      <dd className="mt-1 truncate text-sm font-medium text-foreground">{value}</dd>
     </div>
   );
 }
@@ -93,13 +101,13 @@ function PathList({
   onHover: (target: CanvasSelection) => void;
 }) {
   return (
-    <section className="mt-4">
+    <section className="mt-5">
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <h3 className="text-[11px] font-semibold text-foreground">{title}</h3>
+        <h3 className="text-xs font-semibold text-foreground">{title}</h3>
         <span className="text-[10px] tabular-nums text-(--app-muted)">{paths.length}</span>
       </div>
       {paths.length > 0 ? (
-        <ul className="max-h-40 space-y-0.5 overflow-y-auto">
+        <ul className="max-h-44 space-y-0.5 overflow-y-auto" onMouseLeave={() => onHover(null)}>
           {paths.map((filePath) => (
             <li key={filePath}>
               <PathButton
@@ -123,6 +131,7 @@ export function CanvasDetailPane({
   repoName,
   files,
   edges,
+  insights,
   coverage,
   framework,
   routeCount,
@@ -136,6 +145,7 @@ export function CanvasDetailPane({
   onSelectFile,
   onHover,
 }: CanvasDetailPaneProps) {
+  const [walkMode, setWalkMode] = useState<GraphWalkMode | null>(null);
   const isHovered = (filePath: string) =>
     hovered?.kind === "file"
       ? hovered.id === filePath
@@ -179,6 +189,10 @@ export function CanvasDetailPane({
     }
     return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right));
   }, [selectedFolder]);
+  const walkEntries = useMemo(
+    () => selectedFile && walkMode ? walkGraph(selectedFile.path, files, edges, walkMode, 2) : [],
+    [selectedFile, files, edges, walkMode],
+  );
 
   const focusedLabel = hovered?.kind === "file"
     ? hovered.id
@@ -188,9 +202,9 @@ export function CanvasDetailPane({
 
   return (
     <aside aria-label="Details" className="flex max-h-[60svh] min-h-28 flex-col overflow-hidden rounded-md lg:max-h-none lg:min-h-0 border border-(--app-border) bg-(--app-panel)">
-      <header className="border-b border-(--app-border) p-3">
-        <div className="truncate font-mono text-xs font-semibold text-foreground" title={repoName}>{repoName}</div>
-        <div role="tablist" aria-label="Detail view" className="mt-3 flex gap-1">
+      <header className="shrink-0 border-b border-(--app-border) p-4">
+        <div className="truncate font-mono text-sm font-semibold text-foreground" title={repoName}>{repoName}</div>
+        <div role="tablist" aria-label="Detail view" className="mt-3 flex rounded-md bg-(--app-hover)/70 p-1">
           {(["structure", "explanation"] as const).map((tab) => (
             <button
               key={tab}
@@ -198,8 +212,8 @@ export function CanvasDetailPane({
               role="tab"
               aria-selected={activeTab === tab}
               className={[
-                "rounded px-2 py-1 text-[10px] font-medium capitalize",
-                activeTab === tab ? "bg-(--app-hover) text-foreground" : "text-(--app-muted) hover:text-foreground",
+                "flex-1 rounded px-2 py-1.5 text-[10px] font-medium capitalize transition",
+                activeTab === tab ? "bg-(--app-panel) text-foreground shadow-sm" : "text-(--app-muted) hover:text-foreground",
               ].join(" ")}
               onClick={() => onTabChange(tab)}
             >
@@ -207,15 +221,63 @@ export function CanvasDetailPane({
             </button>
           ))}
         </div>
+        <div className="mt-4">
+          <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-(--app-muted)">Explore dependencies</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {([
+              ["blast-radius", "Blast radius"],
+              ["dependency-chain", "Dependency chain"],
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={walkMode === mode}
+                onClick={() => setWalkMode((current) => current === mode ? null : mode)}
+                className={["min-h-9 rounded-md border px-2 py-1.5 text-[10px] font-medium transition", walkMode === mode ? "border-sky-400/50 bg-sky-500/10 text-sky-300" : "border-(--app-border) text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p
+          aria-hidden={!focusedLabel}
+          className={["mt-3 min-h-4 truncate text-[10px] text-sky-300", focusedLabel ? "opacity-100" : "opacity-0"].join(" ")}
+          title={focusedLabel ?? undefined}
+        >
+          Map focus <span className="ml-1 font-mono">{focusedLabel ?? ""}</span>
+        </p>
       </header>
 
-      {focusedLabel ? (
-        <div className="border-b border-sky-400/30 bg-sky-500/10 px-3 py-2 text-[10px] text-sky-300">
-          Map focus <span className="ml-1 font-mono">{focusedLabel}</span>
-        </div>
-      ) : null}
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {walkMode ? (
+          <section className="mb-5 rounded-md border border-(--app-border) bg-(--app-hover)/40 p-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <h2 className="text-xs font-semibold text-foreground">
+                {walkMode === "blast-radius" ? "Files that depend on this" : "Files this depends on"}
+              </h2>
+              {selectedFile ? <span className="text-[10px] text-(--app-muted)">2 levels · {walkEntries.length}</span> : null}
+            </div>
+            {selectedFile ? walkEntries.length > 0 ? (
+              <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto" onMouseLeave={() => onHover(null)}>
+                {walkEntries.map((entry) => (
+                  <li key={entry.path} className="flex items-center gap-2">
+                    <PathButton
+                      filePath={entry.path}
+                      selected={false}
+                      hovered={isHovered(entry.path)}
+                      onSelect={onSelectFile}
+                      onHover={onHover}
+                    />
+                    <span className="shrink-0 text-[9px] text-(--app-muted)">L{entry.depth}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="mt-2 text-[10px] text-(--app-muted)">No connected files within two levels.</p> : (
+              <p className="mt-2 text-[10px] text-(--app-muted)">Select a file on the map to see its connections.</p>
+            )}
+          </section>
+        ) : null}
         {activeTab === "explanation" ? (
           <p className="py-4 text-xs text-(--app-muted)">No explanation is available yet.</p>
         ) : selectedFile ? (
@@ -319,6 +381,39 @@ export function CanvasDetailPane({
             />
           </>
         )}
+
+        <details className="mt-5 border-t border-(--app-border) pt-3">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[11px] font-semibold text-foreground">
+            <span>Insights</span>
+            <span className="text-[10px] font-normal tabular-nums text-(--app-muted)">
+              {insights.unimportedFiles.length + insights.cycles.length + insights.highlyImportedFiles.length + insights.oversizedFiles.length}
+            </span>
+          </summary>
+          <section className="mt-3">
+            <h3 className="text-[10px] font-semibold text-foreground">Files nothing imports · {insights.unimportedFiles.length}</h3>
+            <p className="mt-1 text-[10px] text-(--app-muted)">{insightCopy.unimported}</p>
+            {insights.unimportedFiles.length ? (
+              <PathList title="Files" paths={insights.unimportedFiles} selectedPath={selectedFile?.path ?? null} isHovered={isHovered} emptyLabel="None" onSelectFile={onSelectFile} onHover={onHover} />
+            ) : <p className="mt-1 text-[10px] text-(--app-muted)">No matching files.</p>}
+          </section>
+          <section className="mt-4">
+            <h3 className="text-[10px] font-semibold text-foreground">Import cycles · {insights.cycles.length}</h3>
+            <p className="mt-1 text-[10px] text-(--app-muted)">{insightCopy.cycles}</p>
+            {insights.cycles.map((cycle, index) => (
+              <PathList key={cycle.join("|")} title={`Cycle ${index + 1}`} paths={cycle} selectedPath={selectedFile?.path ?? null} isHovered={isHovered} emptyLabel="None" onSelectFile={onSelectFile} onHover={onHover} />
+            ))}
+          </section>
+          <section className="mt-4">
+            <h3 className="text-[10px] font-semibold text-foreground">Unusually depended on · {insights.highlyImportedFiles.length}</h3>
+            <p className="mt-1 text-[10px] text-(--app-muted)">{insightCopy.highFanIn}</p>
+            <PathList title="Files" paths={insights.highlyImportedFiles} selectedPath={selectedFile?.path ?? null} isHovered={isHovered} emptyLabel="None" onSelectFile={onSelectFile} onHover={onHover} />
+          </section>
+          <section className="mt-4">
+            <h3 className="text-[10px] font-semibold text-foreground">Long files · {insights.oversizedFiles.length}</h3>
+            <p className="mt-1 text-[10px] text-(--app-muted)">{insightCopy.oversized}</p>
+            <PathList title="Files" paths={insights.oversizedFiles} selectedPath={selectedFile?.path ?? null} isHovered={isHovered} emptyLabel="None" onSelectFile={onSelectFile} onHover={onHover} />
+          </section>
+        </details>
       </div>
     </aside>
   );

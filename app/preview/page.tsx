@@ -41,7 +41,7 @@ const categories: FileCategory[] = Object.entries(
 
 export default function PreviewPage() {
   return (
-    <div className="lg:h-[calc(100svh-8rem)]">
+    <div className="relative left-1/2 w-[calc(100vw-3rem)] max-w-none -translate-x-1/2 lg:h-[calc(100svh-8rem)]">
       <CanvasPreview
         repoLabel="honojs/hono"
         folders={folded.nodes}

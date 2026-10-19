@@ -22,6 +22,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
   highlightedFilePaths: string[];
   hoveredFilePaths: string[];
   hoveredFolder: boolean;
+  categoryFilter: string | null;
+  categoryMatchCount: number;
   categoryColors: Record<string, string>;
   dimmed: boolean;
   onSelectFile: (filePath: string) => void;
@@ -71,9 +73,13 @@ export function createCanvasLayout(
   onSelectFile: (filePath: string) => void,
   onHover: (target: CanvasSelection) => void,
   categoryColors: Record<string, string>,
+  categoryFilter: string | null = null,
 ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const primaryFiles = getSelectionFiles(selection, folded);
   const hoveredFiles = getSelectionFiles(hovered, folded);
+  const categoryFiles = categoryFilter === null
+    ? null
+    : new Set(folded.nodes.flatMap((folder) => folder.files.filter((file) => file.extension === categoryFilter).map((file) => file.path)));
   const activeFiles = new Set([...primaryFiles, ...hoveredFiles]);
   const eligibleEdges = rawEdges.filter(
     (edge) => edge.resolution === "inside" && folded.fileToNode.has(edge.source) && folded.fileToNode.has(edge.target),
@@ -134,6 +140,9 @@ export function createCanvasLayout(
 
   const nodes: CanvasNode[] = folded.nodes.map((folder) => {
     const expanded = expandedFolders.has(folder.id);
+    const categoryMatchCount = categoryFilter === null
+      ? folder.files.length
+      : folder.files.filter((file) => file.extension === categoryFilter).length;
     const size = nodeSizes.get(folder.id) ?? { width: 180, height: 60 };
     const position = graph.node(flowNodeId(folder.id));
     return {
@@ -157,8 +166,12 @@ export function createCanvasLayout(
         highlightedFilePaths: folder.files.filter((file) => activeFiles.has(file.path)).map((file) => file.path),
         hoveredFilePaths: folder.files.filter((file) => hoveredFiles.has(file.path)).map((file) => file.path),
         hoveredFolder: hovered?.kind === "folder" && hovered.id === folder.id,
+        categoryFilter,
+        categoryMatchCount,
         categoryColors,
-        dimmed: (selection !== null || hovered !== null) && !activeNodes.has(folder.id),
+        dimmed: categoryFilter !== null
+          ? categoryMatchCount === 0
+          : (selection !== null || hovered !== null) && !activeNodes.has(folder.id),
         onSelectFile,
         onHover,
       },
@@ -178,7 +191,7 @@ export function createCanvasLayout(
     const targetExpanded = expandedFolders.has(targetFolderId);
     if (sourceFolderId === targetFolderId && !sourceExpanded) continue;
 
-    if (!sourceExpanded && !targetExpanded && selection === null && sourceFolderId !== targetFolderId) {
+    if (!sourceExpanded && !targetExpanded && selection === null && categoryFilter === null && sourceFolderId !== targetFolderId) {
       const key = `${sourceFolderId}\0${targetFolderId}\0${edge.kind}`;
       const aggregate = aggregates.get(key);
       if (aggregate) {
@@ -213,6 +226,7 @@ export function createCanvasLayout(
     const highlighted =
       primaryFiles.has(row.sourceFile) || primaryFiles.has(row.targetFile) ||
       hoveredFiles.has(row.sourceFile) || hoveredFiles.has(row.targetFile);
+    const categoryRelevant = categoryFiles === null || categoryFiles.has(row.sourceFile) || categoryFiles.has(row.targetFile);
     const outbound = primaryFiles.has(row.sourceFile) || hoveredFiles.has(row.sourceFile);
     const color = highlighted ? outbound ? "#d97706" : "#15803d" : "#71717a";
     return {
@@ -239,10 +253,18 @@ export function createCanvasLayout(
       style: {
         stroke: color,
         strokeWidth: highlighted ? 2 : Math.min(1.4 + Math.log2(row.count), 4),
-        opacity: (selection !== null || hovered !== null) && !highlighted ? 0.12 : 0.62,
+        opacity: categoryFilter !== null
+          ? categoryRelevant ? 0.62 : 0.12
+          : (selection !== null || hovered !== null) && !highlighted ? 0.12 : 0.62,
       },
       zIndex: highlighted ? 2 : 0,
-      data: { kind: row.kind, count: row.count, dimmed: (selection !== null || hovered !== null) && !highlighted },
+      data: {
+        kind: row.kind,
+        count: row.count,
+        dimmed: categoryFilter !== null
+          ? !categoryRelevant
+          : (selection !== null || hovered !== null) && !highlighted,
+      },
     };
   });
 
