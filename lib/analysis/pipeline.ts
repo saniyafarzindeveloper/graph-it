@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parseRepository, type ParsedRepositoryResult } from "@/lib/repo-parser";
+import { analyzeFramework, type AdapterResult } from "@/lib/repo-parser/adapters";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 const execFileAsync = promisify(execFile);
@@ -184,14 +185,14 @@ async function setProgress(client: ReturnType<typeof getSupabaseServerClient>, a
   if (error) throw new PipelineError(`Could not save ${stage} progress: ${error.message}`, stage === "completed" ? "store" : stage);
 }
 
-async function insertBatches(client: ReturnType<typeof getSupabaseServerClient>, table: "files" | "edges", rows: Record<string, unknown>[]) {
+async function insertBatches(client: ReturnType<typeof getSupabaseServerClient>, table: "files" | "edges" | "file_roles" | "routes", rows: Record<string, unknown>[]) {
   for (let index = 0; index < rows.length; index += BATCH_SIZE) {
     const { error } = await client.from(table).insert(rows.slice(index, index + BATCH_SIZE));
     if (error) throw new PipelineError(`Could not store ${table}: ${error.message}`, "store");
   }
 }
 
-async function storeResult(client: ReturnType<typeof getSupabaseServerClient>, orgId: string, analysisId: string, result: ParsedRepositoryResult) {
+async function storeResult(client: ReturnType<typeof getSupabaseServerClient>, orgId: string, analysisId: string, result: ParsedRepositoryResult, adapter: AdapterResult) {
   const fileRows = await Promise.all(result.files.map(async (file) => ({
     organization_id: orgId,
     analysis_id: analysisId,
@@ -203,6 +204,7 @@ async function storeResult(client: ReturnType<typeof getSupabaseServerClient>, o
     line_count: file.lines,
     content_hash: file.hash,
     module_name: file.moduleName,
+    commonjs_exports: file.commonJsExports ?? [],
     fan_in: file.fanIn,
     fan_out: file.fanOut,
   })));
@@ -210,6 +212,19 @@ async function storeResult(client: ReturnType<typeof getSupabaseServerClient>, o
   const { data: storedFiles, error } = await client.from("files").select("id,path").eq("analysis_id", analysisId);
   if (error) throw new PipelineError(`Could not map stored files to dependency edges: ${error.message}`, "store");
   const fileIds = new Map((storedFiles ?? []).map((file) => [file.path as string, file.id as string]));
+  const roleRows = adapter.roles.flatMap((role) => {
+    const fileId = fileIds.get(role.path);
+    return fileId ? [{ organization_id: orgId, file_id: fileId, role_name: role.roleName }] : [];
+  });
+  await insertBatches(client, "file_roles", roleRows);
+  const routeRows = adapter.routes.map((route) => ({
+    organization_id: orgId,
+    analysis_id: analysisId,
+    path: route.path,
+    method: route.method,
+    source_file: route.sourceFile,
+  }));
+  await insertBatches(client, "routes", routeRows);
   const edgeRows = result.edges.flatMap((edge) => {
     const source = fileIds.get(edge.source);
     const target = edge.resolution === "inside" ? fileIds.get(edge.target) : undefined;
@@ -232,6 +247,7 @@ export type AnalysisInput = {
   repositoryUrl: string;
   organizationId: string;
   token: string;
+  retryAnalysisId?: string;
 };
 
 export type AnalysisJob = AnalysisInput & {
@@ -252,8 +268,11 @@ export async function preparePublicRepositoryAnalysis(input: AnalysisInput) {
       .eq("organization_id", input.organizationId).eq("repository_key", key).maybeSingle();
     if (error) throw new Error(`Could not check existing analysis: ${error.message}`);
     if (existingAnalysis) {
+      if (input.retryAnalysisId === existingAnalysis.id) {
+        return await prepareAnalysisRetry({ analysisId: existingAnalysis.id as string, organizationId: input.organizationId, token: input.token });
+      }
       if (existingAnalysis.status === "failed") {
-        return await prepareFailedAnalysisRetry({ analysisId: existingAnalysis.id as string, organizationId: input.organizationId, token: input.token });
+        return await prepareAnalysisRetry({ analysisId: existingAnalysis.id as string, organizationId: input.organizationId, token: input.token });
       }
       return { id: existingAnalysis.id as string, status: existingAnalysis.status as string, existing: true as const };
     }
@@ -311,7 +330,7 @@ export async function preparePublicRepositoryAnalysis(input: AnalysisInput) {
   };
 }
 
-async function prepareFailedAnalysisRetry(input: Pick<AnalysisInput, "organizationId" | "token"> & { analysisId: string }) {
+async function prepareAnalysisRetry(input: Pick<AnalysisInput, "organizationId" | "token"> & { analysisId: string }) {
   const client = getSupabaseServerClient(input.token);
   const { data: analysis, error: analysisError } = await client.from("analyses")
     .select("id,status,project_id")
@@ -320,7 +339,9 @@ async function prepareFailedAnalysisRetry(input: Pick<AnalysisInput, "organizati
     .maybeSingle();
   if (analysisError) throw new PipelineError(`Could not load this analysis: ${analysisError.message}`, "store");
   if (!analysis) throw new PipelineError("Analysis was not found in this workspace.", "store");
-  if (analysis.status !== "failed") return { id: analysis.id as string, status: analysis.status as string, existing: true as const };
+  if (analysis.status !== "failed" && analysis.status !== "completed") {
+    return { id: analysis.id as string, status: analysis.status as string, existing: true as const };
+  }
 
   const { data: project, error: projectError } = await client.from("projects")
     .select("repository_url")
@@ -342,8 +363,9 @@ async function prepareFailedAnalysisRetry(input: Pick<AnalysisInput, "organizati
     folder_count: null,
     summary: null,
     completed_at: null,
+    framework: "generic",
     created_at: new Date().toISOString(),
-  }).eq("id", input.analysisId).eq("organization_id", input.organizationId).eq("status", "failed").select("id").maybeSingle();
+  }).eq("id", input.analysisId).eq("organization_id", input.organizationId).eq("status", analysis.status).select("id").maybeSingle();
   if (claimError) throw new PipelineError(`Could not restart this analysis: ${claimError.message}`, "store");
   if (!claimed) {
     const { data: current, error } = await client.from("analyses").select("id,status").eq("id", input.analysisId).single();
@@ -354,6 +376,8 @@ async function prepareFailedAnalysisRetry(input: Pick<AnalysisInput, "organizati
   try {
     const { error: edgeError } = await client.from("edges").delete().eq("analysis_id", input.analysisId).eq("organization_id", input.organizationId);
     if (edgeError) throw new PipelineError(`Could not clear old dependencies: ${edgeError.message}`, "store");
+    const { error: routeError } = await client.from("routes").delete().eq("analysis_id", input.analysisId).eq("organization_id", input.organizationId);
+    if (routeError) throw new PipelineError(`Could not clear old routes: ${routeError.message}`, "store");
     const { error: fileError } = await client.from("files").delete().eq("analysis_id", input.analysisId).eq("organization_id", input.organizationId);
     if (fileError) throw new PipelineError(`Could not clear old files: ${fileError.message}`, "store");
   } catch (error) {
@@ -386,6 +410,7 @@ export async function runPublicRepositoryAnalysis(job: AnalysisJob) {
     stage = "parse";
     await setProgress(client, job.id, stage, "Parsing imports and module relationships");
     const result = parseRepository(sourceRoot);
+    const adapter = analyzeFramework(sourceRoot, result.files);
     const sourceExtensions = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/i;
     const skippedSourceEntries = skippedEntries.filter((entry) => sourceExtensions.test(entry.path));
     result.coverage.filesFound += skippedSourceEntries.length;
@@ -396,7 +421,7 @@ export async function runPublicRepositoryAnalysis(job: AnalysisJob) {
     })));
     stage = "store";
     await setProgress(client, job.id, stage, `Storing ${result.files.length} files and ${result.edges.length} dependencies`);
-    await storeResult(client, job.organizationId, job.id, result);
+    await storeResult(client, job.organizationId, job.id, result, adapter);
     const { error: completeError } = await client.from("analyses").update({
       status: "completed",
       stage: "completed",
@@ -405,6 +430,7 @@ export async function runPublicRepositoryAnalysis(job: AnalysisJob) {
       commit_sha: commitSha,
       coverage: result.coverage,
       folder_count: result.folderCount,
+      framework: adapter.framework,
       summary: `${result.files.length} source files, ${result.edges.length} dependencies. ${result.coverage.importsResolved} imports resolved.`,
     }).eq("id", job.id);
     if (completeError) throw new PipelineError(`Could not complete the analysis: ${completeError.message}`, "store");

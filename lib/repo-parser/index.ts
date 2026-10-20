@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import ts from "typescript";
 
-export type ImportKind = "import" | "re-export" | "dynamic-import";
+export type ImportKind = "import" | "re-export" | "dynamic-import" | "require";
 export type ResolutionStatus = "inside" | "outside" | "excluded" | "unresolved";
 
 export interface SkipEntry {
@@ -18,6 +18,7 @@ export interface RepoFile {
   lines: number;
   hash: string;
   moduleName: string;
+  commonJsExports?: string[];
   fanIn: number;
   fanOut: number;
 }
@@ -112,6 +113,7 @@ function toFileRecord(root: string, filePath: string): RepoFile {
     lines: source.split(/\r?\n/).length,
     hash: crypto.createHash("sha256").update(source).digest("hex").slice(0, 12),
     moduleName: relativePath.replace(new RegExp(`${escapeRegExp(ext)}$`), ""),
+    commonJsExports: [],
     fanIn: 0,
     fanOut: 0,
   };
@@ -258,9 +260,59 @@ function resolveImportTarget(
   };
 }
 
-function parseFileImports(filePath: string, root: string, aliasPaths: Record<string, string[]>, includeExtensions: string[]): RepoEdge[] {
+function parseCommonJsExports(sourceFile: ts.SourceFile): string[] {
+  const names = new Set<string>();
+  const propertyName = (name: ts.PropertyName | ts.BindingName): string | null => {
+    if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+    if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text;
+    return null;
+  };
+  const addObjectExports = (expression: ts.Expression) => {
+    if (ts.isObjectLiteralExpression(expression)) {
+      for (const member of expression.properties) {
+        if (ts.isSpreadAssignment(member)) continue;
+        const name = propertyName(member.name);
+        if (name) names.add(name);
+      }
+    } else if (ts.isFunctionExpression(expression) || ts.isClassExpression(expression)) {
+      if (expression.name) names.add(expression.name.text);
+    } else if (ts.isIdentifier(expression)) {
+      names.add(expression.text);
+    }
+  };
+  const isModuleExports = (expression: ts.Expression) =>
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) && expression.expression.text === "module" &&
+    expression.name.text === "exports";
+  const assignedExportName = (expression: ts.Expression): string | null => {
+    if (ts.isPropertyAccessExpression(expression)) {
+      const base = expression.expression;
+      if ((ts.isIdentifier(base) && base.text === "exports") || isModuleExports(base)) return expression.name.text;
+    }
+    if (ts.isElementAccessExpression(expression) && expression.argumentExpression && ts.isStringLiteralLike(expression.argumentExpression)) {
+      const base = expression.expression;
+      if ((ts.isIdentifier(base) && base.text === "exports") || isModuleExports(base)) return expression.argumentExpression.text;
+    }
+    return null;
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      if (isModuleExports(node.left)) addObjectExports(node.right);
+      const exportedName = assignedExportName(node.left);
+      if (exportedName) names.add(exportedName);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...names].sort((left, right) => left.localeCompare(right));
+}
+
+function parseFileImports(filePath: string, root: string, aliasPaths: Record<string, string[]>, includeExtensions: string[]): { edges: RepoEdge[]; commonJsExports: string[] } {
   const source = fs.readFileSync(filePath, "utf8");
-  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const extension = path.extname(filePath).toLowerCase();
+  const scriptKind = extension === ".tsx" ? ts.ScriptKind.TSX : extension === ".jsx" ? ts.ScriptKind.JSX : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKind);
   const edges: RepoEdge[] = [];
 
   function addEdge(kind: ImportKind, specifier: string, resolution: { path?: string; status: ResolutionStatus; reason?: string }) {
@@ -295,11 +347,18 @@ function parseFileImports(filePath: string, root: string, aliasPaths: Record<str
       }
     }
 
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require" && node.arguments.length > 0) {
+      const firstArg = node.arguments[0];
+      if (ts.isStringLiteralLike(firstArg)) {
+        addEdge("require", firstArg.text, resolveImportTarget(root, filePath, firstArg.text, aliasPaths, includeExtensions));
+      }
+    }
+
     ts.forEachChild(node, visit);
   }
 
   visit(sourceFile);
-  return edges;
+  return { edges, commonJsExports: parseCommonJsExports(sourceFile) };
 }
 
 function gatherSourceFiles(root: string, excludeDirs: string[], includeExtensions: string[]): { files: string[]; skipped: SkipEntry[] } {
@@ -388,11 +447,12 @@ export function parseRepository(root: string, options: ParserOptions = {}): Pars
     const record = toFileRecord(projectRoot, filePath);
     fileRecords.push(record);
 
-    const fileEdges = parseFileImports(filePath, projectRoot, aliasPaths, includeExtensions);
-    allEdges.push(...fileEdges);
+    const parsed = parseFileImports(filePath, projectRoot, aliasPaths, includeExtensions);
+    record.commonJsExports = parsed.commonJsExports;
+    allEdges.push(...parsed.edges);
     coverage.filesParsed += 1;
 
-    for (const edge of fileEdges) {
+    for (const edge of parsed.edges) {
       coverage.importsSeen += 1;
       if (edge.kind === "re-export") {
         coverage.reExportsFound += 1;

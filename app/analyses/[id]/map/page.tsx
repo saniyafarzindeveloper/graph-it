@@ -2,33 +2,14 @@ import { auth } from "@clerk/nextjs/server";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { CanvasPreview, type FileCategory } from "@/components/canvas-preview";
+import { AnalysisRerunButton } from "@/components/analysis-rerun-button";
 import { foldRepository } from "@/lib/canvas/folding";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser";
+import { getFrameworkTaxonomy } from "@/lib/repo-parser/taxonomy";
+import type { FrameworkId, FrameworkRoute } from "@/lib/repo-parser/adapters/types";
 
 export const instant = false;
-
-const categoryColors: Record<string, string> = {
-  ts: "#60a5fa",
-  tsx: "#34d399",
-  js: "#f59e0b",
-  jsx: "#f472b6",
-  mjs: "#a78bfa",
-  cjs: "#22d3ee",
-  mts: "#4ade80",
-  cts: "#fb7185",
-};
-
-const categoryLabels: Record<string, string> = {
-  ts: "TypeScript",
-  tsx: "TSX",
-  js: "JavaScript",
-  jsx: "JSX",
-  mjs: "MJS",
-  cjs: "CJS",
-  mts: "MTS",
-  cts: "CTS",
-};
 
 type PageProps = { params: Promise<{ id: string }> };
 
@@ -40,16 +21,20 @@ export default async function AnalysisMapPage({ params }: PageProps) {
 
   const client = getSupabaseServerClient(token);
   const { data: analysis, error: analysisError } = await client.from("analyses")
-    .select("id,name,status,coverage")
+    .select("id,name,status,coverage,framework")
     .eq("id", id)
     .eq("organization_id", orgId)
     .maybeSingle();
   if (analysisError || !analysis) notFound();
   if (analysis.status !== "completed") redirect(`/analyses/${id}`);
 
-  const [{ data: storedFiles, error: filesError }, { data: storedEdges, error: edgesError }] = await Promise.all([
+  const [
+    { data: storedFiles, error: filesError },
+    { data: storedEdges, error: edgesError },
+    { data: storedRoutes, error: routesError },
+  ] = await Promise.all([
     client.from("files")
-      .select("id,path,folder,extension,line_count,content_hash,module_name,fan_in,fan_out")
+      .select("id,path,folder,extension,line_count,content_hash,module_name,commonjs_exports,fan_in,fan_out")
       .eq("analysis_id", id)
       .eq("organization_id", orgId)
       .order("path"),
@@ -57,8 +42,18 @@ export default async function AnalysisMapPage({ params }: PageProps) {
       .select("source_file_id,target_file_id,kind,specifier,resolution,reason")
       .eq("analysis_id", id)
       .eq("organization_id", orgId),
+    client.from("routes")
+      .select("method,path,source_file")
+      .eq("analysis_id", id)
+      .eq("organization_id", orgId)
+      .order("path"),
   ]);
-  if (filesError || edgesError || !storedFiles) notFound();
+  if (filesError || edgesError || routesError || !storedFiles) notFound();
+  const { data: storedRoles, error: rolesError } = await client.from("file_roles")
+    .select("file_id,role_name,files!inner(analysis_id)")
+    .eq("organization_id", orgId)
+    .eq("files.analysis_id", id);
+  if (rolesError) notFound();
 
   const filePaths = new Map(storedFiles.map((file) => [file.id as string, file.path as string]));
   const files: RepoFile[] = storedFiles.map((file) => ({
@@ -68,6 +63,7 @@ export default async function AnalysisMapPage({ params }: PageProps) {
     lines: file.line_count ?? 0,
     hash: file.content_hash ?? "",
     moduleName: file.module_name ?? (file.path as string).replace(/\.[^.]+$/, ""),
+    commonJsExports: Array.isArray(file.commonjs_exports) ? file.commonjs_exports as string[] : [],
     fanIn: file.fan_in ?? 0,
     fanOut: file.fan_out ?? 0,
   }));
@@ -85,25 +81,52 @@ export default async function AnalysisMapPage({ params }: PageProps) {
     }];
   });
   const folded = foldRepository(files, edges);
-  const categories: FileCategory[] = Object.entries(files.reduce<Record<string, number>>((counts, file) => {
-    counts[file.extension] = (counts[file.extension] ?? 0) + 1;
-    return counts;
-  }, {})).sort(([left], [right]) => left.localeCompare(right)).map(([extension, count]) => {
-    const key = extension.replace(/^\./, "");
-    return {
-      id: extension,
-      label: categoryLabels[key] ?? extension,
-      count,
-      color: categoryColors[key] ?? "#a1a1aa",
-    };
+  const frameworkValue = analysis.framework as FrameworkId;
+  const framework: FrameworkId = ["next", "nestjs", "express", "react", "generic"].includes(frameworkValue) ? frameworkValue : "generic";
+  const taxonomy = getFrameworkTaxonomy(framework);
+  const rolesByFile = new Map<string, Set<string>>();
+  const pathsByRole = new Map<string, Set<string>>();
+  const filePathById = new Map(storedFiles.map((file) => [file.id as string, file.path as string]));
+  for (const role of storedRoles ?? []) {
+    const filePath = filePathById.get(role.file_id as string);
+    if (!filePath) continue;
+    const names = rolesByFile.get(filePath) ?? new Set<string>();
+    names.add(role.role_name as string);
+    rolesByFile.set(filePath, names);
+    const paths = pathsByRole.get(role.role_name as string) ?? new Set<string>();
+    paths.add(filePath);
+    pathsByRole.set(role.role_name as string, paths);
+  }
+  const categories: FileCategory[] = taxonomy.categories.map((category) => {
+    const filePaths = framework === "generic"
+      ? files.map((file) => file.path)
+      : category.name === "Other files"
+        ? files.filter((file) => !rolesByFile.has(file.path)).map((file) => file.path)
+        : [...(pathsByRole.get(category.name) ?? [])];
+    return { id: category.name, label: category.name, count: filePaths.length, color: category.color, filePaths };
   });
   const coverage = (analysis.coverage ?? {}) as CoverageReport;
+  const routes: FrameworkRoute[] = (storedRoutes ?? []).flatMap((route) =>
+    typeof route.source_file === "string"
+      ? [{ method: route.method as string, path: route.path as string, sourceFile: route.source_file }]
+      : [],
+  );
 
   return (
     <div className="relative left-1/2 w-[calc(100vw-3rem)] max-w-none -translate-x-1/2 lg:flex lg:h-[calc(100svh-8rem)] lg:flex-col">
-      <div className="mb-3 flex items-center justify-between gap-3 text-sm">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm">
         <Link href={`/analyses/${id}`} className="text-(--app-muted) transition hover:text-(--app-fg)">← Analysis details</Link>
-        <span className="truncate font-mono text-xs text-(--app-muted)">{analysis.name}</span>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+          <span className="max-w-48 truncate font-mono text-xs text-(--app-muted) sm:max-w-72">{analysis.name}</span>
+          <span
+            aria-label={framework === "generic" ? "Framework not detected" : `Detected framework: ${taxonomy.label}`}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${framework === "generic" ? "border-amber-400/30 bg-amber-500/10 text-amber-300" : "border-sky-400/30 bg-sky-500/10 text-sky-200"}`}
+          >
+            <span aria-hidden="true" className={`size-1.5 rounded-full ${framework === "generic" ? "bg-amber-400" : "bg-sky-400"}`} />
+            Framework: {framework === "generic" ? "Not detected" : taxonomy.label}
+          </span>
+          <AnalysisRerunButton analysisId={id} />
+        </div>
       </div>
       <div className="lg:min-h-0 lg:flex-1">
       <CanvasPreview
@@ -112,10 +135,12 @@ export default async function AnalysisMapPage({ params }: PageProps) {
         fileToNode={Array.from(folded.fileToNode.entries())}
         edges={edges}
         categories={categories}
+        categoriesTitle={`${taxonomy.label} roles`}
+        routes={routes}
         threshold={folded.threshold}
         coverage={coverage}
-        framework={null}
-        routeCount={null}
+        framework={taxonomy.label}
+        routeCount={routes.length}
         unclassifiedCount={coverage.filesSkipped}
       />
       </div>

@@ -5,6 +5,7 @@ import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index
 import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CanvasSelection } from "@/lib/canvas/layout";
 import { walkGraph, type GraphWalkMode, type RepositoryInsights } from "@/lib/canvas/analysis";
+import type { FrameworkRoute } from "@/lib/repo-parser/adapters";
 
 export type DetailTab = "structure" | "explanation";
 
@@ -17,6 +18,7 @@ interface CanvasDetailPaneProps {
   framework: string | null;
   routeCount: number | null;
   unclassifiedCount: number | null;
+  routes: FrameworkRoute[];
   fileToNode: Map<string, string>;
   hovered: CanvasSelection;
   selectedFile: RepoFile | null;
@@ -136,6 +138,7 @@ export function CanvasDetailPane({
   framework,
   routeCount,
   unclassifiedCount,
+  routes,
   fileToNode,
   hovered,
   selectedFile,
@@ -307,6 +310,19 @@ export function CanvasDetailPane({
               onSelectFile={onSelectFile}
               onHover={onHover}
             />
+            {selectedFile.commonJsExports?.length ? (
+              <section className="mt-4">
+                <div className="mb-1 flex items-baseline justify-between gap-2">
+                  <h3 className="text-[11px] font-semibold text-foreground">CommonJS exports</h3>
+                  <span className="text-[10px] tabular-nums text-(--app-muted)">{selectedFile.commonJsExports.length}</span>
+                </div>
+                <ul className="flex flex-wrap gap-1">
+                  {selectedFile.commonJsExports.map((name) => (
+                    <li key={name} className="rounded bg-(--app-hover)/70 px-1.5 py-1 font-mono text-[10px] text-(--app-muted)">{name}</li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
             {fileRelations.otherImports.length > 0 ? (
               <section className="mt-4">
                 <h3 className="mb-1 text-[11px] font-semibold text-foreground">Other imports</h3>
@@ -361,6 +377,33 @@ export function CanvasDetailPane({
               <Metric label="Routes" value={routeCount ?? "Not analyzed"} />
               <Metric label="Unidentified files" value={unclassifiedCount ?? "Not classified"} />
             </dl>
+            <section className="mt-5">
+              <div className="mb-2 flex items-baseline justify-between gap-2">
+                <h3 className="text-xs font-semibold text-foreground">Routes</h3>
+                <span className="text-[10px] tabular-nums text-(--app-muted)">{routes.length}</span>
+              </div>
+              {routes.length > 0 ? (
+                <div className="max-h-52 overflow-y-auto rounded-md border border-(--app-border)">
+                  <table className="w-full text-left text-[10px]">
+                    <thead className="sticky top-0 bg-(--app-panel) text-(--app-muted)">
+                      <tr><th className="px-2 py-1.5 font-medium">Method</th><th className="px-2 py-1.5 font-medium">Pattern</th></tr>
+                    </thead>
+                    <tbody>
+                      {routes.map((route, index) => (
+                        <tr key={`${route.method}:${route.path}:${route.sourceFile}:${index}`} className="border-t border-(--app-border)">
+                          <td className="whitespace-nowrap px-2 py-1.5 font-mono text-sky-300">{route.method}</td>
+                          <td className="px-2 py-1.5">
+                            <button type="button" title={route.sourceFile} onClick={() => onSelectFile(route.sourceFile)} className="block max-w-full truncate font-mono text-(--app-fg) hover:text-sky-300">
+                              {route.path}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="text-[10px] text-(--app-muted)">No exact routes were found.</p>}
+            </section>
             <PathList
               title="Most depended on"
               paths={topDependedOn.map((file) => file.path)}

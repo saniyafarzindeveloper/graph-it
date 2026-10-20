@@ -1,0 +1,21 @@
+{
+  "name": "deep-agent-quickstart",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent": "node --env-file-if-exists=../.env.local --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/core": "latest",
+    "@langchain/openai": "latest",
+    "deepagents": "latest",
+    "langchain": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

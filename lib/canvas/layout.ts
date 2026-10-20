@@ -21,6 +21,7 @@ export interface CanvasNodeData extends Record<string, unknown> {
   hasFocus: boolean;
   highlightedFilePaths: string[];
   hoveredFilePaths: string[];
+  categoryMatchedFilePaths: string[];
   hoveredFolder: boolean;
   categoryFilter: string | null;
   categoryMatchCount: number;
@@ -74,12 +75,14 @@ export function createCanvasLayout(
   onHover: (target: CanvasSelection) => void,
   categoryColors: Record<string, string>,
   categoryFilter: string | null = null,
+  categoryPaths: Map<string, string[]> = new Map(),
 ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const primaryFiles = getSelectionFiles(selection, folded);
   const hoveredFiles = getSelectionFiles(hovered, folded);
+  const explicitCategoryPaths = categoryFilter === null ? undefined : categoryPaths.get(categoryFilter);
   const categoryFiles = categoryFilter === null
     ? null
-    : new Set(folded.nodes.flatMap((folder) => folder.files.filter((file) => file.extension === categoryFilter).map((file) => file.path)));
+    : new Set(explicitCategoryPaths ?? folded.nodes.flatMap((folder) => folder.files.filter((file) => file.extension === categoryFilter).map((file) => file.path)));
   const activeFiles = new Set([...primaryFiles, ...hoveredFiles]);
   const eligibleEdges = rawEdges.filter(
     (edge) => edge.resolution === "inside" && folded.fileToNode.has(edge.source) && folded.fileToNode.has(edge.target),
@@ -142,7 +145,7 @@ export function createCanvasLayout(
     const expanded = expandedFolders.has(folder.id);
     const categoryMatchCount = categoryFilter === null
       ? folder.files.length
-      : folder.files.filter((file) => file.extension === categoryFilter).length;
+      : folder.files.filter((file) => categoryFiles?.has(file.path) ?? false).length;
     const size = nodeSizes.get(folder.id) ?? { width: 180, height: 60 };
     const position = graph.node(flowNodeId(folder.id));
     return {
@@ -165,6 +168,9 @@ export function createCanvasLayout(
         hasFocus: selection !== null || hovered !== null,
         highlightedFilePaths: folder.files.filter((file) => activeFiles.has(file.path)).map((file) => file.path),
         hoveredFilePaths: folder.files.filter((file) => hoveredFiles.has(file.path)).map((file) => file.path),
+        categoryMatchedFilePaths: categoryFilter === null
+          ? folder.files.map((file) => file.path)
+          : folder.files.filter((file) => categoryFiles?.has(file.path) ?? false).map((file) => file.path),
         hoveredFolder: hovered?.kind === "folder" && hovered.id === folder.id,
         categoryFilter,
         categoryMatchCount,

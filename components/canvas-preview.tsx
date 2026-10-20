@@ -19,12 +19,14 @@ import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index";
 import { CanvasDetailPane, type DetailTab } from "@/components/canvas-detail-pane";
 import { analyzeRepository } from "@/lib/canvas/analysis";
+import type { FrameworkRoute } from "@/lib/repo-parser/adapters";
 
 export interface FileCategory {
   id: string;
   label: string;
   count: number;
   color: string;
+  filePaths?: string[];
 }
 
 interface CanvasPreviewProps {
@@ -33,6 +35,8 @@ interface CanvasPreviewProps {
   fileToNode: Array<[string, string]>;
   edges: RepoEdge[];
   categories: FileCategory[];
+  categoriesTitle?: string;
+  routes?: FrameworkRoute[];
   threshold: number;
   coverage: CoverageReport;
   framework: string | null;
@@ -54,6 +58,7 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
     categoryColors,
     categoryFilter,
     categoryMatchCount,
+    categoryMatchedFilePaths,
   } = data;
   const selectedFolder = data.selectedFolder;
   const highlightedFiles = new Set(highlightedFilePaths);
@@ -120,7 +125,7 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
                       "nodrag nopan flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left font-mono text-[10px]",
                       selected ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground",
                       !categoryFilter && hasFocus && !highlightedFiles.has(file.path) ? "opacity-25" : "opacity-100",
-                      categoryFilter && file.extension !== categoryFilter ? "opacity-20" : "",
+                      categoryFilter && !categoryMatchedFilePaths.includes(file.path) ? "opacity-20" : "",
                       hoveredFilePaths.includes(file.path) ? "bg-sky-500/15 text-sky-300" : "",
                     ].join(" ")}
                     onClick={(event) => {
@@ -155,12 +160,25 @@ function FolderNode({ data }: NodeProps<CanvasNode>) {
 
 const nodeTypes: NodeTypes = { folder: FolderNode };
 
+const extensionColors: Record<string, string> = {
+  ".ts": "#60a5fa",
+  ".tsx": "#34d399",
+  ".js": "#f59e0b",
+  ".jsx": "#f472b6",
+  ".mjs": "#a78bfa",
+  ".cjs": "#22d3ee",
+  ".mts": "#4ade80",
+  ".cts": "#fb7185",
+};
+
 function CanvasStage({
   repoLabel,
   folders,
   fileToNode,
   edges,
   categories,
+  categoriesTitle,
+  routes = [],
   threshold,
   coverage,
   framework,
@@ -180,7 +198,11 @@ function CanvasStage({
     [folders, fileToNode, threshold],
   );
   const categoryColors = useMemo(
-    () => Object.fromEntries(categories.map((category) => [category.id, category.color])),
+    () => ({ ...extensionColors, ...Object.fromEntries(categories.map((category) => [category.id, category.color])) }),
+    [categories],
+  );
+  const categoryPaths = useMemo(
+    () => new Map(categories.filter((category) => category.filePaths).map((category) => [category.id, category.filePaths!])),
     [categories],
   );
 
@@ -226,8 +248,8 @@ function CanvasStage({
   }, [folded]);
 
   const graph = useMemo(
-    () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors, categoryFilter),
-    [folded, edges, expandedFolders, selection, hovered, selectFile, categoryColors, categoryFilter],
+    () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors, categoryFilter, categoryPaths),
+    [folded, edges, expandedFolders, selection, hovered, selectFile, categoryColors, categoryFilter, categoryPaths],
   );
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: CanvasNode) => {
@@ -260,8 +282,8 @@ function CanvasStage({
 
   return (
     <main className="grid h-full min-h-136 grid-cols-1 gap-3 lg:grid-cols-[minmax(14rem,16%)_minmax(0,1fr)_minmax(18rem,24%)]">
-      <aside aria-label="File categories" className="min-h-28 overflow-y-auto rounded-md border border-(--app-border) bg-(--app-panel) p-3 lg:min-h-0">
-        <h1 className="mb-3 text-xs font-semibold text-foreground">File categories</h1>
+      <aside aria-label={categoriesTitle ?? "File categories"} className="min-h-28 overflow-y-auto rounded-md border border-(--app-border) bg-(--app-panel) p-3 lg:min-h-0">
+        <h1 className="mb-3 text-xs font-semibold text-foreground">{categoriesTitle ?? "File categories"}</h1>
         <ul className="space-y-2">
           {categories.map((category) => (
             <li key={category.id}>
@@ -322,6 +344,7 @@ function CanvasStage({
         framework={framework}
         routeCount={routeCount}
         unclassifiedCount={unclassifiedCount}
+        routes={routes}
         fileToNode={folded.fileToNode}
         hovered={hovered}
         selectedFile={selectedFile}

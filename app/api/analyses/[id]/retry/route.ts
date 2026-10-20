@@ -31,7 +31,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     if (projectError) throw new PipelineError(`Could not load the repository URL: ${projectError.message}`, "store");
     if (!project?.repository_url) throw new PipelineError("This analysis has no saved public repository URL.", "store");
 
-    const result = await preparePublicRepositoryAnalysis({ repositoryUrl: project.repository_url as string, organizationId: orgId, token });
+    const result = await preparePublicRepositoryAnalysis({ repositoryUrl: project.repository_url as string, organizationId: orgId, token, retryAnalysisId: id });
     if (result.job) {
       after(async () => {
         try {
