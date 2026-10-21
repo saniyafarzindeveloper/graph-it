@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Repository explanations
+
+File and folder explanations use Gemini through LangChain. Add your Gemini API key to the root `.env.local` as `GOOGLE_API_KEY=...` (the `GEMINI_API_KEY` name is also accepted). To send explanation traces to LangSmith, configure `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, and `LANGSMITH_PROJECT` in the same file. Restart the development server after changing environment variables.
+
 ## Getting Started
 
 First, run the development server:

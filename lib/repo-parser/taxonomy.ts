@@ -52,7 +52,7 @@ export const FRAMEWORK_TAXONOMY: Record<FrameworkId, FrameworkTaxonomy> = {
   },
   generic: {
     label: "Generic",
-    categories: [{ name: "Source files", color: "#71717a" }],
+    categories: [{ name: "Unclassified files", color: "#71717a" }],
   },
 };
 

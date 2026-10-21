@@ -30,6 +30,9 @@ export interface FileCategory {
 }
 
 interface CanvasPreviewProps {
+  analysisId?: string | null;
+  tracingConfigured?: boolean;
+  initialAiRoles?: Array<[string, string]>;
   repoLabel: string;
   folders: FoldedFolder[];
   fileToNode: Array<[string, string]>;
@@ -172,6 +175,9 @@ const extensionColors: Record<string, string> = {
 };
 
 function CanvasStage({
+  analysisId = null,
+  tracingConfigured = false,
+  initialAiRoles = [],
   repoLabel,
   folders,
   fileToNode,
@@ -246,6 +252,17 @@ function CanvasStage({
     }
     setSelection({ kind: "file", id: filePath });
   }, [folded]);
+
+  const selectPath = useCallback((path: string) => {
+    if (allFiles.some((file) => file.path === path)) {
+      selectFile(path);
+      return;
+    }
+    const folder = folders.find((item) => item.id === path);
+    if (!folder) return;
+    setExpandedFolders((current) => current.has(folder.id) ? current : new Set([...current, folder.id]));
+    setSelection({ kind: "folder", id: folder.id });
+  }, [allFiles, folders, selectFile]);
 
   const graph = useMemo(
     () => createCanvasLayout(folded, edges, expandedFolders, selection, hovered, selectFile, setHovered, categoryColors, categoryFilter, categoryPaths),
@@ -336,6 +353,9 @@ function CanvasStage({
       </section>
 
       <CanvasDetailPane
+        analysisId={analysisId}
+        tracingConfigured={tracingConfigured}
+        initialAiRoles={initialAiRoles}
         repoName={repoLabel}
         files={allFiles}
         edges={edges}
@@ -352,6 +372,7 @@ function CanvasStage({
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onSelectFile={selectFile}
+        onSelectPath={selectPath}
         onHover={updateHover}
       />
     </main>

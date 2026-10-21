@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { AnalysisRerunButton } from "@/components/analysis-rerun-button";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser/index";
 import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CanvasSelection } from "@/lib/canvas/layout";
@@ -10,6 +12,9 @@ import type { FrameworkRoute } from "@/lib/repo-parser/adapters";
 export type DetailTab = "structure" | "explanation";
 
 interface CanvasDetailPaneProps {
+  analysisId: string | null;
+  tracingConfigured: boolean;
+  initialAiRoles: Array<[string, string]>;
   repoName: string;
   files: RepoFile[];
   edges: RepoEdge[];
@@ -26,8 +31,77 @@ interface CanvasDetailPaneProps {
   activeTab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   onSelectFile: (filePath: string) => void;
+  onSelectPath: (path: string) => void;
   onHover: (target: CanvasSelection) => void;
 }
+
+interface ExplanationState {
+  content: string | null;
+  role: string | null;
+  stale: boolean;
+  staleReason: string | null;
+  cacheHit: boolean;
+  tracingConfigured: boolean;
+  model: string;
+  loading?: boolean;
+  error?: string;
+}
+
+function renderInline(text: string, paths: string[], onSelectPath: (path: string) => void): ReactNode[] {
+  const pathPattern = paths.length
+    ? paths.map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
+    : "(?!)";
+  const tokenPattern = new RegExp("(\\*\\*[^*]+\\*\\*|`[^`]+`|(?<![\\w.-])(?:" + pathPattern + ")(?![\\w.-]))", "g");
+  const rendered: React.ReactNode[] = [];
+  let offset = 0;
+  let tokenIndex = 0;
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    if (start > offset) rendered.push(text.slice(offset, start).replace(/[*#`]/g, ""));
+    if (token.startsWith("**") && token.endsWith("**")) {
+      rendered.push(<strong key={`bold-${tokenIndex++}`} className="font-semibold text-foreground">{renderInline(token.slice(2, -2), paths, onSelectPath)}</strong>);
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      const value = token.slice(1, -1);
+      if (paths.includes(value)) {
+        rendered.push(<button key={`path-${tokenIndex++}`} type="button" onClick={() => onSelectPath(value)} className="font-mono text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-200">{value}</button>);
+      } else {
+        rendered.push(<code key={`code-${tokenIndex++}`} className="rounded bg-(--app-hover) px-1 py-0.5 font-mono text-[0.92em] text-sky-200">{value.replace(/[*#`]/g, "")}</code>);
+      }
+    } else {
+      rendered.push(<button key={`path-${tokenIndex++}`} type="button" onClick={() => onSelectPath(token)} className="font-mono text-sky-300 underline decoration-sky-300/40 underline-offset-2 hover:text-sky-200">{token}</button>);
+    }
+    offset = start + token.length;
+  }
+  if (offset < text.length) rendered.push(text.slice(offset).replace(/[*#`]/g, ""));
+  return rendered;
+}
+
+function ExplanationText({ content, paths, onSelectPath }: { content: string; paths: string[]; onSelectPath: (path: string) => void }) {
+  const lines = content.split(/\r?\n/);
+  const blocks: Array<{ kind: "paragraph" | "list"; lines: string[] }> = [];
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/^\s{0,3}#{1,6}\s+/, "").trim();
+    if (!line) continue;
+    const bullet = line.match(/^[-*+]\s+(.+)$/);
+    const kind = bullet ? "list" : "paragraph";
+    const text = bullet?.[1] ?? line;
+    const last = blocks.at(-1);
+    if (last?.kind === kind) last.lines.push(text);
+    else blocks.push({ kind, lines: [text] });
+  }
+  return <div className="space-y-3 text-xs leading-5 text-(--app-fg)">{blocks.map((block, index) => block.kind === "list" ? (
+    <ul key={`list-${index}`} className="list-disc space-y-1 pl-4">
+      {block.lines.map((line, itemIndex) => <li key={itemIndex}>{renderInline(line, paths, onSelectPath)}</li>)}
+    </ul>
+  ) : (
+    <p key={`paragraph-${index}`}>{renderInline(block.lines.join(" "), paths, onSelectPath)}</p>
+  ))}</div>;
+}
+
+const roleLabels: Record<string, string> = {
+  service: "Service", repository: "Repository", model: "Model", util: "Utility", config: "Config", component: "Component", hook: "Hook",
+};
 
 const insightCopy = {
   unimported: "These files have no in-repository dependents; framework and tooling entry points are left out.",
@@ -130,6 +204,9 @@ function PathList({
 }
 
 export function CanvasDetailPane({
+  analysisId,
+  tracingConfigured,
+  initialAiRoles,
   repoName,
   files,
   edges,
@@ -146,9 +223,13 @@ export function CanvasDetailPane({
   activeTab,
   onTabChange,
   onSelectFile,
+  onSelectPath,
   onHover,
 }: CanvasDetailPaneProps) {
   const [walkMode, setWalkMode] = useState<GraphWalkMode | null>(null);
+  const [explanations, setExplanations] = useState<Record<string, ExplanationState>>({});
+  const [aiRoles, setAiRoles] = useState<Record<string, string>>(() => Object.fromEntries(initialAiRoles));
+  const lastTargetKey = useRef<string | null>(null);
   const isHovered = (filePath: string) =>
     hovered?.kind === "file"
       ? hovered.id === filePath
@@ -202,6 +283,62 @@ export function CanvasDetailPane({
     : hovered?.kind === "folder"
       ? selectedFolder?.id === hovered.id ? selectedFolder.label : hovered.id
       : null;
+  const target = useMemo(() => selectedFile
+    ? { kind: "file" as const, path: selectedFile.path }
+    : selectedFolder
+      ? { kind: "folder" as const, path: selectedFolder.folder }
+      : null, [selectedFile, selectedFolder]);
+  const targetKey = target ? `${target.kind}:${target.path}` : null;
+  const explanation = targetKey ? explanations[targetKey] : undefined;
+  const linkablePaths = useMemo(() => [...new Set([...files.map((file) => file.path), ...fileToNode.values()])].sort((a, b) => b.length - a.length), [files, fileToNode]);
+
+  const requestExplanation = useCallback(async (refreshKey: string, targetKind: "file" | "folder", targetPath: string) => {
+    setExplanations((current) => ({
+      ...current,
+      [refreshKey]: { ...current[refreshKey], content: current[refreshKey]?.content ?? null, role: current[refreshKey]?.role ?? null, stale: current[refreshKey]?.stale ?? false, cacheHit: current[refreshKey]?.cacheHit ?? false, tracingConfigured, model: current[refreshKey]?.model ?? "", loading: true, error: undefined },
+    }));
+    try {
+      if (!analysisId) throw new Error("AI explanations are available for analyzed repositories, not the preview map.");
+      const response = await fetch(`/api/analyses/${encodeURIComponent(analysisId)}/explain`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetKind, targetPath }),
+        signal: AbortSignal.timeout(100_000),
+      });
+      const payload = await response.json() as Partial<ExplanationState> & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Could not explain this repository item.");
+      const result: ExplanationState = {
+        content: payload.content ?? null,
+        role: payload.role ?? null,
+        stale: Boolean(payload.stale),
+        staleReason: payload.staleReason ?? null,
+        cacheHit: Boolean(payload.cacheHit),
+        tracingConfigured: Boolean(payload.tracingConfigured),
+        model: payload.model ?? "",
+      };
+      setExplanations((current) => ({ ...current, [refreshKey]: result }));
+      if (targetKind === "file" && result.role) setAiRoles((current) => ({ ...current, [targetPath]: result.role! }));
+    } catch (error) {
+      const message = error instanceof Error && error.name === "TimeoutError"
+        ? "The explanation request timed out. Check the server connection and try again."
+        : error instanceof Error
+          ? error.message
+          : "Could not explain this repository item.";
+      setExplanations((current) => ({
+        ...current,
+        [refreshKey]: { ...current[refreshKey], content: current[refreshKey]?.content ?? null, role: current[refreshKey]?.role ?? null, stale: current[refreshKey]?.stale ?? false, cacheHit: current[refreshKey]?.cacheHit ?? false, tracingConfigured, model: current[refreshKey]?.model ?? "", error: message },
+      }));
+    } finally {
+      setExplanations((current) => current[refreshKey] ? { ...current, [refreshKey]: { ...current[refreshKey], loading: false } } : current);
+    }
+  }, [analysisId, tracingConfigured]);
+
+  useEffect(() => {
+    const targetChanged = lastTargetKey.current !== targetKey;
+    lastTargetKey.current = targetKey;
+    if (!targetChanged || activeTab !== "explanation" || !target || !targetKey || !explanations[targetKey]?.content) return;
+    void requestExplanation(targetKey, target.kind, target.path);
+  }, [activeTab, target, targetKey, explanations, requestExplanation]);
 
   return (
     <aside aria-label="Details" className="flex max-h-[60svh] min-h-28 flex-col overflow-hidden rounded-md lg:max-h-none lg:min-h-0 border border-(--app-border) bg-(--app-panel)">
@@ -224,6 +361,9 @@ export function CanvasDetailPane({
             </button>
           ))}
         </div>
+        <p className="mt-2 text-[10px] text-amber-300">
+          {tracingConfigured ? "LangSmith settings present · access not verified" : "LangSmith tracing not configured"}
+        </p>
         <div className="mt-4">
           <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-(--app-muted)">Explore dependencies</p>
           <div className="grid grid-cols-2 gap-1.5">
@@ -282,10 +422,43 @@ export function CanvasDetailPane({
           </section>
         ) : null}
         {activeTab === "explanation" ? (
-          <p className="py-4 text-xs text-(--app-muted)">No explanation is available yet.</p>
+          target ? (
+            <section aria-live="polite" className="space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <h2 className="min-w-0 wrap-break-word font-mono text-xs font-semibold text-foreground">{target.path}</h2>
+                <button
+                  type="button"
+                  disabled={!analysisId || Boolean(explanation?.loading || explanation?.stale)}
+                  onClick={() => void requestExplanation(targetKey!, target.kind, target.path)}
+                  className="shrink-0 rounded border border-(--app-border) px-2 py-1 text-[10px] font-medium text-sky-300 hover:bg-(--app-hover) disabled:cursor-wait disabled:opacity-60"
+                >
+                  {!analysisId ? "Unavailable in preview" : explanation?.loading ? "Explaining…" : explanation?.stale ? "Re-analyze to refresh" : explanation?.content ? "Explain again" : "Explain"}
+                </button>
+              </div>
+              {selectedFile && (explanation?.role || aiRoles[selectedFile.path]) ? (
+                <p className="text-[10px] text-(--app-muted)">AI role <span className="ml-1 font-medium text-violet-300">{roleLabels[explanation?.role ?? aiRoles[selectedFile.path] ?? ""] ?? explanation?.role ?? aiRoles[selectedFile.path]}</span></p>
+              ) : null}
+              {explanation?.stale ? (
+                <div role="status" className="space-y-2 rounded-md border border-amber-400/30 bg-amber-500/10 p-3 text-[11px] text-amber-100">
+                  <p>{explanation.staleReason ?? "This repository has changed since this map was analyzed. This explanation may be stale."}</p>
+                  {analysisId ? <AnalysisRerunButton analysisId={analysisId} /> : null}
+                </div>
+              ) : null}
+              {explanation?.error ? <p role="alert" className="rounded-md border border-rose-400/30 bg-rose-500/10 p-3 text-[11px] text-rose-200">{explanation.error}</p> : null}
+              {explanation?.content ? <ExplanationText content={explanation.content} paths={linkablePaths} onSelectPath={onSelectPath} /> : null}
+              {explanation?.cacheHit ? <p className="text-[10px] text-(--app-muted)">Cached result · no model tokens</p> : null}
+              {!explanation?.content && !explanation?.stale && !explanation?.loading && !explanation?.error ? (
+                <p className="text-[11px] leading-5 text-(--app-muted)">Explain this {target.kind} using its source and the relationships stored in this map.</p>
+              ) : null}
+              {explanation?.model ? <p className="border-t border-(--app-border) pt-2 text-[9px] text-(--app-muted)">Model {explanation.model}</p> : null}
+            </section>
+          ) : (
+            <p className="py-4 text-xs leading-5 text-(--app-muted)">Select a file or folded folder, then choose Explain to describe it from its analyzed source and relationships.</p>
+          )
         ) : selectedFile ? (
           <>
             <h2 className="wrap-break-word font-mono text-xs font-semibold text-foreground">{selectedFile.path}</h2>
+            {aiRoles[selectedFile.path] ? <p className="mt-2 text-[10px] text-(--app-muted)">AI role <span className="ml-1 font-medium text-violet-300">{roleLabels[aiRoles[selectedFile.path]!] ?? aiRoles[selectedFile.path]}</span></p> : null}
             <dl className="mt-3 grid grid-cols-2 gap-x-3">
               <Metric label="Kind" value={languageNames[selectedFile.extension] ?? (selectedFile.extension || "Unknown")} />
               <Metric label="Lines" value={selectedFile.lines} />

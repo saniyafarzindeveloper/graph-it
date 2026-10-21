@@ -8,6 +8,7 @@ import { getSupabaseServerClient } from "@/lib/supabase/server";
 import type { CoverageReport, RepoEdge, RepoFile } from "@/lib/repo-parser";
 import { getFrameworkTaxonomy } from "@/lib/repo-parser/taxonomy";
 import type { FrameworkId, FrameworkRoute } from "@/lib/repo-parser/adapters/types";
+import { isTracingConfigured } from "@/lib/ai/client";
 
 export const instant = false;
 
@@ -99,12 +100,31 @@ export default async function AnalysisMapPage({ params }: PageProps) {
   }
   const categories: FileCategory[] = taxonomy.categories.map((category) => {
     const filePaths = framework === "generic"
-      ? files.map((file) => file.path)
+      ? files.filter((file) => !rolesByFile.has(file.path)).map((file) => file.path)
       : category.name === "Other files"
         ? files.filter((file) => !rolesByFile.has(file.path)).map((file) => file.path)
         : [...(pathsByRole.get(category.name) ?? [])];
     return { id: category.name, label: category.name, count: filePaths.length, color: category.color, filePaths };
   });
+  const aiRoleColors: Record<string, string> = {
+    service: "#f59e0b", repository: "#34d399", model: "#fb7185", util: "#a78bfa",
+    config: "#fbbf24", component: "#38bdf8", hook: "#c084fc",
+  };
+  const aiRoleNames = [...new Set((storedRoles ?? []).map((role) => role.role_name as string).filter((name) => name.startsWith("ai:")))];
+  for (const roleName of aiRoleNames) {
+    const roleValue = roleName.slice(3);
+    const filePaths = [...(pathsByRole.get(roleName) ?? [])];
+    categories.push({
+      id: roleName,
+      label: `AI · ${roleValue.charAt(0).toUpperCase()}${roleValue.slice(1)}`,
+      count: filePaths.length,
+      color: aiRoleColors[roleValue] ?? "#a78bfa",
+      filePaths,
+    });
+  }
+  const initialAiRoles = [...rolesByFile.entries()].flatMap(([filePath, roleNames]) =>
+    [...roleNames].filter((name) => name.startsWith("ai:")).map((name) => [filePath, name.slice(3)] as [string, string]),
+  );
   const coverage = (analysis.coverage ?? {}) as CoverageReport;
   const routes: FrameworkRoute[] = (storedRoutes ?? []).flatMap((route) =>
     typeof route.source_file === "string"
@@ -130,6 +150,9 @@ export default async function AnalysisMapPage({ params }: PageProps) {
       </div>
       <div className="lg:min-h-0 lg:flex-1">
       <CanvasPreview
+        analysisId={id}
+        tracingConfigured={isTracingConfigured()}
+        initialAiRoles={initialAiRoles}
         repoLabel={analysis.name}
         folders={folded.nodes}
         fileToNode={Array.from(folded.fileToNode.entries())}
