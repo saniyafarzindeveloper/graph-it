@@ -345,7 +345,6 @@ function CanvasStage({
           nodesConnectable={false}
           elementsSelectable={false}
           defaultEdgeOptions={{ type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed } }}
-          proOptions={{ hideAttribution: true }}
         >
           <Background color="var(--app-border)" gap={22} size={1} />
           <Controls showInteractive={false} position="bottom-left" />

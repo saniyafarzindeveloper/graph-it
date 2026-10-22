@@ -11,7 +11,7 @@ OPENAI_API_KEY=your_openai_api_key
 LANGSMITH_API_KEY=your_langsmith_api_key
 ```
 
-`LANGSMITH_TRACING`, `LANGSMITH_ENDPOINT`, and `LANGSMITH_PROJECT` are configured in the root `.env.local`. LangSmith's API key is separate from your OpenAI key and is needed to send traces to the project.
+`LANGSMITH_TRACING`, `LANGSMITH_ENDPOINT`, and `LANGSMITH_PROJECT` are configured in the root `.env.local`. LangSmith's API key is separate from your OpenAI key and is needed to send traces to the project. If the key is workspace-scoped, also set `LANGSMITH_WORKSPACE_ID` to that workspace's ID; LangSmith's JavaScript SDK requires it for workspace-scoped keys.
 
 ## Run
 

@@ -3,19 +3,24 @@ import { traceable } from "langsmith/traceable";
 import { z } from "zod";
 
 export const EXPLANATION_MODEL = "gemini-3.8-flash";
+const FALLBACK_EXPLANATION_MODEL = "gemini-3.5-flash-lite";
 
 const ExplanationSchema = z.object({
   explanation: z.string().min(1),
   role: z.enum(["service", "repository", "model", "util", "config", "component", "hook"]).nullable(),
 });
 
-let modelClient: ChatGoogle | null = null;
+const modelClients = new Map<string, ChatGoogle>();
 
-export function getModelClient() {
+export function getModelClient(modelName = EXPLANATION_MODEL) {
   const apiKey = process.env.GOOGLE_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new Error("AI explanations need GOOGLE_API_KEY (or GEMINI_API_KEY) configured on the server.");
-  modelClient ??= new ChatGoogle({ model: EXPLANATION_MODEL, apiKey, maxRetries: 0 });
-  return modelClient;
+  let client = modelClients.get(modelName);
+  if (!client) {
+    client = new ChatGoogle({ model: modelName, apiKey, maxRetries: 0 });
+    modelClients.set(modelName, client);
+  }
+  return client;
 }
 
 export function isTracingConfigured() {
@@ -64,7 +69,7 @@ const runExplanation = traceable(async (input: ExplanationCall): Promise<Explana
   if (cached) return { content: cached.content, aiRole: cached.aiRole, cacheHit: true, stale: input.stale, staleReason: input.staleReason };
   if (input.stale) return { content: null, aiRole: null, cacheHit: false, stale: true, staleReason: input.staleReason };
 
-  const model = getModelClient().withStructuredOutput(ExplanationSchema, {
+  const model = (modelName: string) => getModelClient(modelName).withStructuredOutput(ExplanationSchema, {
     name: "repository_explanation",
   });
   const roleInstruction = input.classifyRole
@@ -77,14 +82,34 @@ const runExplanation = traceable(async (input: ExplanationCall): Promise<Explana
   const sourceFiles = await input.loadSources();
   const sources = sourceFiles.map((source) => `FILE ${source.path}\n\`\`\`source\n${source.content}\n\`\`\``).join("\n\n");
   let response;
+  const requestSignal = AbortSignal.timeout(90_000);
+  const invokeOptions = { maxRetries: 2, signal: requestSignal };
+  const messages = [
+    { role: "system" as const, content: `${context}\n\n${formatRules}` },
+    { role: "user" as const, content: `DIRECT RELATIONSHIPS\n${input.relationships.join("\n") || "None"}\n\nSOURCE FILES\n${sources}` },
+  ];
   try {
-    response = await model.invoke([
-      { role: "system", content: `${context}\n\n${formatRules}` },
-      { role: "user", content: `DIRECT RELATIONSHIPS\n${input.relationships.join("\n") || "None"}\n\nSOURCE FILES\n${sources}` },
-    ], { signal: AbortSignal.timeout(60_000) });
+    try {
+      response = await model(EXPLANATION_MODEL).invoke(messages, invokeOptions);
+    } catch (primaryError) {
+      const statusCode = typeof primaryError === "object" && primaryError !== null && "statusCode" in primaryError
+        ? Number((primaryError as { statusCode: unknown }).statusCode)
+        : undefined;
+      if (![408, 429, 500, 502, 503, 504].includes(statusCode ?? 0)) throw primaryError;
+      response = await model(FALLBACK_EXPLANATION_MODEL).invoke(messages, invokeOptions);
+    }
   } catch (error) {
     if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error("Gemini did not respond within 60 seconds. Try the explanation again.");
+      throw new Error("Gemini did not respond within 90 seconds. Try the explanation again.");
+    }
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error
+      ? Number((error as { statusCode: unknown }).statusCode)
+      : undefined;
+    if (statusCode === 429) {
+      throw new Error("Gemini's request limit has been reached. Check your API quota or wait for it to reset, then try again.");
+    }
+    if (statusCode === 503) {
+      throw new Error("Gemini is temporarily at capacity. Please wait a moment, then try the explanation again.");
     }
     throw error;
   }

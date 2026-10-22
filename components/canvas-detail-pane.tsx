@@ -361,27 +361,21 @@ export function CanvasDetailPane({
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[10px] text-amber-300">
-          {tracingConfigured ? "LangSmith settings present · access not verified" : "LangSmith tracing not configured"}
-        </p>
-        <div className="mt-4">
-          <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-(--app-muted)">Explore dependencies</p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {([
-              ["blast-radius", "Blast radius"],
-              ["dependency-chain", "Dependency chain"],
-            ] as const).map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={walkMode === mode}
-                onClick={() => setWalkMode((current) => current === mode ? null : mode)}
-                className={["min-h-9 rounded-md border px-2 py-1.5 text-[10px] font-medium transition", walkMode === mode ? "border-sky-400/50 bg-sky-500/10 text-sky-300" : "border-(--app-border) text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div role="group" aria-label="Dependency views" className="mt-3 flex items-center gap-1.5">
+          {([
+            ["blast-radius", "Blast radius"],
+            ["dependency-chain", "Dependency chain"],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={walkMode === mode}
+              onClick={() => setWalkMode((current) => current === mode ? null : mode)}
+              className={["rounded-full px-2.5 py-1 text-[9px] font-medium transition", walkMode === mode ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <p
           aria-hidden={!focusedLabel}

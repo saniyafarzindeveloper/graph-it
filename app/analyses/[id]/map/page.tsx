@@ -137,7 +137,6 @@ export default async function AnalysisMapPage({ params }: PageProps) {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm">
         <Link href={`/analyses/${id}`} className="text-(--app-muted) transition hover:text-(--app-fg)">← Analysis details</Link>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
-          <span className="max-w-48 truncate font-mono text-xs text-(--app-muted) sm:max-w-72">{analysis.name}</span>
           <span
             aria-label={framework === "generic" ? "Framework not detected" : `Detected framework: ${taxonomy.label}`}
             className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${framework === "generic" ? "border-amber-400/30 bg-amber-500/10 text-amber-300" : "border-sky-400/30 bg-sky-500/10 text-sky-200"}`}
