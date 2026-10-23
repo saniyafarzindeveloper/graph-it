@@ -1,24 +1,26 @@
-import { createDeepAgent } from "deepagents";
+import { createRepositoryAgent } from "./repository-agent.js";
 
-const model = "openai:gpt-5.5-2026-04-23";
+const [question, ...questionParts] = process.argv.slice(2);
+const prompt = [question, ...questionParts].filter(Boolean).join(" ").trim();
+const credential = process.env.REPOSITORY_AGENT_CREDENTIAL?.trim();
 
-const internetSearch = { type: "web_search_preview" };
-const researchInstructions = `You are an expert researcher. Research the user's topic using the internet search tool, then write a clear, concise report. Prefer reliable sources, distinguish confirmed facts from uncertainty, and include source links when available.
+if (!prompt || !credential) {
+  console.error('Usage: REPOSITORY_AGENT_CREDENTIAL="<short-lived token>" npm run agent -- "<question>"');
+  process.exitCode = 2;
+} else {
+  const agent = await createRepositoryAgent(credential);
+  const result = await agent.invoke({
+    messages: [{ role: "user", content: prompt }],
+  }, { recursionLimit: 12 });
 
-Use the web_search tool as your primary way to gather current information.`;
-
-const agent = await createDeepAgent({
-  model,
-  tools: [internetSearch],
-  systemPrompt: researchInstructions,
-});
-
-const question = process.argv.slice(2).join(" ").trim() || "What is LangGraph?";
-const result = await agent.invoke({
-  messages: [{ role: "user", content: question }],
-});
-
-const finalMessage = result.messages.at(-1);
-console.log(typeof finalMessage?.content === "string"
-  ? finalMessage.content
-  : JSON.stringify(finalMessage?.content ?? "No response returned.", null, 2));
+  for (const message of result.messages) {
+    const calls = "tool_calls" in message && Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    for (const call of calls) {
+      if (typeof call === "object" && call !== null && "name" in call) console.log(`Tool: ${String(call.name)}`);
+    }
+  }
+  const finalMessage = result.messages.at(-1);
+  console.log(typeof finalMessage?.content === "string"
+    ? finalMessage.content
+    : JSON.stringify(finalMessage?.content ?? "No response returned.", null, 2));
+}

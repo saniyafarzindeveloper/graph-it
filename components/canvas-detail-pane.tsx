@@ -8,8 +8,10 @@ import type { FoldedFolder } from "@/lib/canvas/folding";
 import type { CanvasSelection } from "@/lib/canvas/layout";
 import { walkGraph, type GraphWalkMode, type RepositoryInsights } from "@/lib/canvas/analysis";
 import type { FrameworkRoute } from "@/lib/repo-parser/adapters";
+import { RepositoryAskPanel } from "@/components/repository-ask-panel";
 
 export type DetailTab = "structure" | "explanation";
+type PaneMode = "overview" | "ask";
 
 interface CanvasDetailPaneProps {
   analysisId: string | null;
@@ -227,6 +229,7 @@ export function CanvasDetailPane({
   onHover,
 }: CanvasDetailPaneProps) {
   const [walkMode, setWalkMode] = useState<GraphWalkMode | null>(null);
+  const [paneMode, setPaneMode] = useState<PaneMode>("overview");
   const [explanations, setExplanations] = useState<Record<string, ExplanationState>>({});
   const [aiRoles, setAiRoles] = useState<Record<string, string>>(() => Object.fromEntries(initialAiRoles));
   const lastTargetKey = useRef<string | null>(null);
@@ -344,49 +347,59 @@ export function CanvasDetailPane({
     <aside aria-label="Details" className="flex max-h-[60svh] min-h-28 flex-col overflow-hidden rounded-md lg:max-h-none lg:min-h-0 border border-(--app-border) bg-(--app-panel)">
       <header className="shrink-0 border-b border-(--app-border) p-4">
         <div className="truncate font-mono text-sm font-semibold text-foreground" title={repoName}>{repoName}</div>
-        <div role="tablist" aria-label="Detail view" className="mt-3 flex rounded-md bg-(--app-hover)/70 p-1">
-          {(["structure", "explanation"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              className={[
-                "flex-1 rounded px-2 py-1.5 text-[10px] font-medium capitalize transition",
-                activeTab === tab ? "bg-(--app-panel) text-foreground shadow-sm" : "text-(--app-muted) hover:text-foreground",
-              ].join(" ")}
-              onClick={() => onTabChange(tab)}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-        <div role="group" aria-label="Dependency views" className="mt-3 flex items-center gap-1.5">
-          {([
-            ["blast-radius", "Blast radius"],
-            ["dependency-chain", "Dependency chain"],
-          ] as const).map(([mode, label]) => (
+        <div role="tablist" aria-label="Pane view" className="mt-3 flex rounded-md bg-(--app-hover)/70 p-1">
+          {(["overview", "ask"] as const).map((mode) => (
             <button
               key={mode}
               type="button"
-              aria-pressed={walkMode === mode}
-              onClick={() => setWalkMode((current) => current === mode ? null : mode)}
-              className={["rounded-full px-2.5 py-1 text-[9px] font-medium transition", walkMode === mode ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
+              role="tab"
+              aria-selected={paneMode === mode}
+              className={[
+                "flex-1 rounded px-2 py-1.5 text-xs font-medium capitalize transition",
+                paneMode === mode ? "bg-(--app-panel) text-foreground shadow-sm" : "text-(--app-muted) hover:text-foreground",
+              ].join(" ")}
+              onClick={() => setPaneMode(mode)}
             >
-              {label}
+              {mode === "overview" ? "Overview" : "Ask"}
             </button>
           ))}
         </div>
-        <p
-          aria-hidden={!focusedLabel}
-          className={["mt-3 min-h-4 truncate text-[10px] text-sky-300", focusedLabel ? "opacity-100" : "opacity-0"].join(" ")}
-          title={focusedLabel ?? undefined}
-        >
-          Map focus <span className="ml-1 font-mono">{focusedLabel ?? ""}</span>
-        </p>
+        {paneMode === "overview" ? (
+          <>
+            <div role="tablist" aria-label="Overview detail" className="mt-3 flex items-center gap-1 border-b border-(--app-border)">
+              {(["structure", "explanation"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab}
+                  className={["border-b-2 px-2 py-1.5 text-[10px] font-medium capitalize transition", activeTab === tab ? "border-sky-400 text-sky-300" : "border-transparent text-(--app-muted) hover:text-foreground"].join(" ")}
+                  onClick={() => onTabChange(tab)}
+                >{tab}</button>
+              ))}
+            </div>
+            <div role="group" aria-label="Dependency views" className="mt-3 flex items-center gap-1.5">
+              {([
+                ["blast-radius", "Blast radius"],
+                ["dependency-chain", "Dependency chain"],
+              ] as const).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={walkMode === mode}
+                  onClick={() => setWalkMode((current) => current === mode ? null : mode)}
+                  className={["rounded-full px-2.5 py-1 text-[9px] font-medium transition", walkMode === mode ? "bg-sky-500/15 text-sky-300" : "text-(--app-muted) hover:bg-(--app-hover) hover:text-foreground"].join(" ")}
+                >{label}</button>
+              ))}
+            </div>
+            <p aria-hidden={!focusedLabel} className={["mt-3 min-h-4 truncate text-[10px] text-sky-300", focusedLabel ? "opacity-100" : "opacity-0"].join(" ")} title={focusedLabel ?? undefined}>
+              Map focus <span className="ml-1 font-mono">{focusedLabel ?? ""}</span>
+            </p>
+          </>
+        ) : null}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className={paneMode === "overview" ? "min-h-0 flex-1 overflow-y-auto p-4" : "hidden"}>
         {walkMode ? (
           <section className="mb-5 rounded-md border border-(--app-border) bg-(--app-hover)/40 p-3">
             <div className="flex items-baseline justify-between gap-2">
@@ -624,6 +637,14 @@ export function CanvasDetailPane({
             <PathList title="Files" paths={insights.oversizedFiles} selectedPath={selectedFile?.path ?? null} isHovered={isHovered} emptyLabel="None" onSelectFile={onSelectFile} onHover={onHover} />
           </section>
         </details>
+      </div>
+      <div className={paneMode === "ask" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        <RepositoryAskPanel
+          analysisId={analysisId}
+          selectedPath={selectedFile?.path ?? selectedFolder?.folder ?? null}
+          files={files.map((file) => file.path)}
+          onSelectPath={onSelectPath}
+        />
       </div>
     </aside>
   );

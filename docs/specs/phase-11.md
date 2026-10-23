@@ -14,6 +14,8 @@
   held-out set with real ground truth. Hide the role, ask the model, compare.
 - **Prompt versions.** The current explanation prompt and a previous one, run
   over the same dataset as two separate experiments, scored side by side.
+  Publish the workspace-scoped dataset, both prompt experiments, and their
+  evaluator scores to LangSmith so they can be inspected there as well.
 
 ## Constraints
 
@@ -38,6 +40,8 @@
    files.
 4. Two prompt versions sit side by side in the dashboard with scores, and you
    can say which is better **and by how much**.
+5. The same prompt runs and evaluator scores appear under the dataset's
+   experiments in LangSmith.
 
 ## Not in this phase
 

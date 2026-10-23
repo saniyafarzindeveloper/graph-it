@@ -65,9 +65,10 @@ export default async function DashboardPage() {
       <section className="overflow-hidden rounded-lg border border-(--app-border) bg-(--app-panel)">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-base font-semibold">Recent analyses</h1>
-          <span className="text-xs text-(--app-muted)">
-            {analyses.length} {analyses.length === 1 ? "analysis" : "analyses"}
-          </span>
+          <div className="flex items-center gap-4">
+            <Link href="/dashboard/evals" className="text-xs font-medium text-sky-400 hover:underline">Evaluations</Link>
+            <span className="text-xs text-(--app-muted)">{analyses.length} {analyses.length === 1 ? "analysis" : "analyses"}</span>
+          </div>
         </div>
 
         {analysesError ? (

@@ -1,17 +1,20 @@
 {
-  "name": "deep-agent-quickstart",
+  "name": "repository-map-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "agent": "node --env-file-if-exists=../.env.local --import tsx src/index.ts",
+    "agent:server": "node --env-file-if-exists=../.env.local --import tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@langchain/core": "latest",
-    "@langchain/openai": "latest",
-    "deepagents": "latest",
-    "langchain": "latest"
+    "@langchain/core": "1.2.18",
+    "@langchain/google": "0.2.12",
+    "@langchain/langgraph": "1.5.1",
+    "deepagents": "1.15.1",
+    "langchain": "1.5.18",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

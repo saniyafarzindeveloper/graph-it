@@ -67,3 +67,28 @@ then the API and its credentials, then the chat panel, then the evaluation.
 
 Sub-agents, planners, and the managed filesystem. The runtime provides all
 three; none of our questions are large enough to need them yet.
+
+## Implementation notes
+
+The Ask pane is a top-level mode beside Overview. Structure/Explanation remain
+inside Overview, and their active selection is preserved when switching modes.
+The app checks Clerk organization access and mints a fresh scoped tool
+credential for each question. It derives an opaque runtime thread ID from the
+user, organization, analysis, and browser conversation key so history cannot
+cross those scopes. The standalone agent service streams tool start and
+completion events as server-sent events; its `MemorySaver` checkpoint state is
+process-local and resets when the service restarts. Set
+`REPOSITORY_AGENT_SERVICE_URL` only when the service is not at the local
+development default (`http://127.0.0.1:3100`).
+
+## Implementation decision — scoped tool access
+
+The tool-access credential is a 120-second-or-shorter nested signed and
+encrypted JWT, bound to one completed analysis and its organization. The outer
+encryption keeps the embedded Clerk session token opaque to the agent process;
+the inner signature authenticates the scope. The app's GET-only tool endpoints
+verify the credential, filter every database query by that analysis and
+organization, and use the embedded Clerk token with the Supabase publishable
+key so existing RLS policies still apply. No service-role or other
+RLS-bypassing key is present in the agent service. The agent sees the opaque
+credential only in tool closures, never the analysis or organization IDs.

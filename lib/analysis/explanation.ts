@@ -2,7 +2,9 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type { getSupabaseServerClient } from "@/lib/supabase/server";
-import { EXPLANATION_MODEL, isTracingConfigured, runExplanation, type ExplanationCacheEntry, type ExplanationSource } from "@/lib/ai/client";
+import { CURRENT_PROMPT_VERSION, EXPLANATION_MODEL, isTracingConfigured, runExplanation, type ExplanationCacheEntry } from "@/lib/ai/client";
+import { collectExplanationEvidence } from "@/lib/evals/path-context";
+import { buildSourceContext, fetchManySources, GITHUB_TIMEOUT_MS, parseRepositoryUrl, type Repository } from "@/lib/analysis/repository-sources";
 
 type SupabaseClient = ReturnType<typeof getSupabaseServerClient>;
 type TargetKind = "file" | "folder";
@@ -17,29 +19,6 @@ interface FileRow {
 interface EdgeRow {
   source_file_id: string;
   target_file_id: string;
-}
-
-interface Repository {
-  owner: string;
-  name: string;
-}
-
-const GITHUB_TIMEOUT_MS = 20_000;
-const MAX_SOURCE_CHARS = 12_000;
-const MAX_CONTEXT_CHARS = 600_000;
-
-function parseRepositoryUrl(value: string): Repository {
-  const url = new URL(value);
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || parts.length !== 2) {
-    throw new Error("This analysis needs a public GitHub repository URL.");
-  }
-  const owner = parts[0];
-  const name = parts[1]?.replace(/\.git$/i, "");
-  if (!owner || !name || !/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(name)) {
-    throw new Error("The saved GitHub repository URL is malformed.");
-  }
-  return { owner, name };
 }
 
 async function fetchGithubJson(url: string) {
@@ -69,26 +48,6 @@ async function getCurrentCommit(repository: Repository) {
   return commit.sha;
 }
 
-function sourceUrl(repository: Repository, commitSha: string, filePath: string) {
-  const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-  return `https://raw.githubusercontent.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/${commitSha}/${encodedPath}`;
-}
-
-async function fetchSource(repository: Repository, commitSha: string, filePath: string, allowMissing = false) {
-  const response = await fetch(sourceUrl(repository, commitSha, filePath), {
-    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
-    cache: "no-store",
-  });
-  if (response.status === 404 && allowMissing) return null;
-  if (response.status === 404) throw new Error(`Could not retrieve ${filePath} from the analyzed commit.`);
-  if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status} while reading ${filePath}.`);
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > 2_000_000) throw new Error(`${filePath} is too large to explain safely.`);
-  const content = await response.text();
-  if (Buffer.byteLength(content, "utf8") > 2_000_000) throw new Error(`${filePath} is too large to explain safely.`);
-  return content;
-}
-
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -101,34 +60,6 @@ function getAncestors(folder: string) {
   if (folder === ".") return ["."];
   const parts = folder.split("/");
   return parts.map((_part, index) => parts.slice(0, index + 1).join("/"));
-}
-
-function fetchManySources(repository: Repository, commitSha: string, paths: string[], allowMissing: true): Promise<Map<string, string | null>>;
-function fetchManySources(repository: Repository, commitSha: string, paths: string[]): Promise<Map<string, string>>;
-async function fetchManySources(repository: Repository, commitSha: string, paths: string[], allowMissing = false) {
-  const result = new Map<string, string | null>();
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(8, paths.length) }, async () => {
-    while (cursor < paths.length) {
-      const path = paths[cursor++];
-      if (!path) continue;
-      result.set(path, await fetchSource(repository, commitSha, path, allowMissing));
-    }
-  });
-  await Promise.all(workers);
-  return result;
-}
-
-function buildSourceContext(sourceMap: Map<string, string>, focusPath: string): ExplanationSource[] {
-  let remaining = MAX_CONTEXT_CHARS;
-  const entries = [...sourceMap.entries()].sort(([left], [right]) => left.localeCompare(right));
-  return entries.map(([path, content], index) => {
-    const targetBudget = path === focusPath ? MAX_SOURCE_CHARS * 2 : MAX_SOURCE_CHARS;
-    const budget = Math.min(targetBudget, Math.floor(remaining / Math.max(1, entries.length - index)));
-    remaining -= budget;
-    if (content.length <= budget) return { path, content };
-    return { path, content: `${content.slice(0, budget)}\n/* source excerpt truncated for context size */` };
-  });
 }
 
 export async function explainRepositoryTarget({
@@ -170,35 +101,15 @@ export async function explainRepositoryTarget({
   if (edgesError) throw new Error(`Could not load repository dependencies: ${edgesError.message}`);
   const files = (storedFiles ?? []) as FileRow[];
   const edges = (storedEdges ?? []) as EdgeRow[];
-  const fileById = new Map(files.map((file) => [file.id, file]));
   const fileByPath = new Map(files.map((file) => [file.path, file]));
 
   let focusFiles: FileRow[];
-  let relationLines: string[];
-  const sourcePaths = new Set<string>();
   let focusFile: FileRow | null = null;
 
   if (targetKind === "file") {
     focusFile = fileByPath.get(targetPath) ?? null;
     if (!focusFile) throw new Error("That file is not part of this analysis.");
     focusFiles = [focusFile];
-    const incoming: string[] = [];
-    const outgoing: string[] = [];
-    for (const edge of edges) {
-      const source = fileById.get(edge.source_file_id);
-      const target = fileById.get(edge.target_file_id);
-      if (!source || !target) continue;
-      if (source.path === focusFile.path) {
-        outgoing.push(`${source.path} imports ${target.path}`);
-        sourcePaths.add(target.path);
-      }
-      if (target.path === focusFile.path) {
-        incoming.push(`${source.path} imports ${target.path}`);
-        sourcePaths.add(source.path);
-      }
-    }
-    relationLines = [...outgoing, ...incoming].sort();
-    sourcePaths.add(focusFile.path);
   } else {
     const validFolders = new Set(files.flatMap((file) => getAncestors(file.folder ?? ".")));
     if (!validFolders.has(targetPath)) throw new Error("That folder is not part of this analysis.");
@@ -206,22 +117,10 @@ export async function explainRepositoryTarget({
       ? files
       : files.filter((file) => file.path.startsWith(`${targetPath}/`));
     if (focusFiles.length === 0) throw new Error("That folder contains no analyzed source files.");
-    const members = new Set(focusFiles.map((file) => file.path));
-    const relations: string[] = [];
-    for (const edge of edges) {
-      const source = fileById.get(edge.source_file_id);
-      const target = fileById.get(edge.target_file_id);
-      if (!source || !target) continue;
-      const sourceInside = members.has(source.path);
-      const targetInside = members.has(target.path);
-      if (sourceInside === targetInside) continue;
-      relations.push(`${source.path} imports ${target.path}${sourceInside ? " (outgoing from folder)" : " (incoming to folder)"}`);
-      sourcePaths.add(source.path);
-      sourcePaths.add(target.path);
-    }
-    relationLines = [...new Set(relations)].sort();
-    for (const file of focusFiles) sourcePaths.add(file.path);
   }
+  const evidence = collectExplanationEvidence(targetKind, targetPath, files, edges);
+  const relationLines = evidence.relationships;
+  const sourcePaths = new Set(evidence.sourcePaths);
 
   const currentCommit = await getCurrentCommit(repository);
   const analyzedCommit = analysis.commit_sha as string | null;
@@ -261,18 +160,19 @@ export async function explainRepositoryTarget({
 
   const readCache = async (): Promise<ExplanationCacheEntry | null> => {
     const { data, error } = await client.from("explanation_cache")
-      .select("content,ai_role")
+      .select("content,ai_role,path_check")
       .eq("organization_id", organizationId)
       .eq("analysis_id", analysisId)
       .eq("target_kind", targetKind)
       .eq("target_path", targetPath)
       .eq("content_hash", contentHash)
       .eq("model_name", EXPLANATION_MODEL)
+      .eq("prompt_version", CURRENT_PROMPT_VERSION)
       .maybeSingle();
     if (error) throw new Error(`Could not check explanation cache: ${error.message}`);
-    return data ? { content: data.content as string, aiRole: data.ai_role as string | null } : null;
+    return data ? { content: data.content as string, aiRole: data.ai_role as string | null, pathCheck: data.path_check as ExplanationCacheEntry["pathCheck"] } : null;
   };
-  const writeCache = async (entry: ExplanationCacheEntry) => {
+  const writeCache = async (entry: ExplanationCacheEntry & { sourcePaths: string[]; relationships: string[]; promptVersion: string }) => {
     if (fileId && entry.aiRole && classifyRole) {
       const { error: roleError } = await client.from("file_roles").insert({
         organization_id: organizationId,
@@ -288,9 +188,13 @@ export async function explainRepositoryTarget({
       target_path: targetPath,
       content_hash: contentHash,
       model_name: EXPLANATION_MODEL,
+      prompt_version: entry.promptVersion,
+      source_paths: entry.sourcePaths,
+      relationships: entry.relationships,
+      path_check: entry.pathCheck,
       content: entry.content,
       ai_role: entry.aiRole,
-    }, { onConflict: "organization_id,analysis_id,target_kind,target_path,content_hash,model_name" });
+    }, { onConflict: "organization_id,analysis_id,target_kind,target_path,content_hash,model_name,prompt_version" });
     if (error) throw new Error(`Could not save this explanation: ${error.message}`);
   };
 
