@@ -1,6 +1,6 @@
-import { analyzeRepository, walkGraph } from "../canvas/analysis.js";
-import type { RepoEdge, RepoFile } from "../repo-parser/index.js";
-import type { FrameworkRoute } from "../repo-parser/adapters/types.js";
+import { analyzeRepository, walkGraph } from "../canvas/analysis.ts";
+import type { RepoEdge, RepoFile } from "../repo-parser/index.ts";
+import type { FrameworkRoute } from "../repo-parser/adapters/types.ts";
 import { z } from "zod";
 
 export interface RepositoryRole {
