@@ -39,6 +39,12 @@ async function queryToolEndpoint<T extends Record<string, string | number | unde
       : `Repository tool endpoint returned HTTP ${response.status}.`;
     throw new Error(message);
   }
+  if (typeof payload === "object" && payload !== null) {
+    if ("credential" in payload && typeof payload.credential === "string") {
+      access.credential = payload.credential;
+    }
+    if ("result" in payload) return JSON.stringify(payload.result) ?? "null";
+  }
   return JSON.stringify(payload);
 }
 

@@ -13,8 +13,8 @@ export async function POST(request: Request, context: AskRouteContext) {
   const origin = request.headers.get("origin");
   if (!origin || origin !== new URL(request.url).origin) return json({ error: "Cross-origin requests are not allowed." }, 403);
 
-  const { userId, orgId, getToken } = await auth();
-  if (!userId || !orgId) return json({ error: "Sign in and select a workspace first." }, 401);
+  const { userId, orgId, sessionId, getToken } = await auth();
+  if (!userId || !orgId || !sessionId) return json({ error: "Sign in and select a workspace first." }, 401);
 
   let input: { question?: unknown; conversationId?: unknown };
   try {
@@ -46,7 +46,7 @@ export async function POST(request: Request, context: AskRouteContext) {
       analysisId: String(analysis.id),
       organizationId: orgId,
       userId,
-      databaseAccessToken,
+      sessionId,
     }));
     threadId = getScopedAgentThreadId({
       analysisId: String(analysis.id),

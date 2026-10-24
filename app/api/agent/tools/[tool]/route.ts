@@ -1,4 +1,5 @@
-import { verifyAgentCredential } from "@/lib/agent/credential";
+import { clerkClient } from "@clerk/nextjs/server";
+import { AGENT_CREDENTIAL_TTL_SECONDS, mintAgentCredential, verifyAgentCredential } from "@/lib/agent/credential";
 import { loadCredentialRepositorySnapshot } from "@/lib/agent/repository-snapshot";
 import { REPOSITORY_TOOL_SCHEMAS, runRepositoryTool, type RepositoryToolName } from "@/lib/agent/repository-tools";
 
@@ -47,9 +48,27 @@ export async function GET(request: Request, context: ToolRouteContext) {
   const parsedInput = REPOSITORY_TOOL_SCHEMAS[toolName].safeParse(input);
   if (!parsedInput.success) return response({ error: "Invalid repository tool arguments." }, 400);
 
+  let databaseAccessToken: string;
   try {
-    const snapshot = await loadCredentialRepositorySnapshot(claims);
-    return response(runRepositoryTool(snapshot, toolName, parsedInput.data));
+    const client = await clerkClient();
+    const session = await client.sessions.getSession(claims.sessionId);
+    if (
+      session.status !== "active" ||
+      session.userId !== claims.userId ||
+      session.lastActiveOrganizationId !== claims.organizationId
+    ) return response({ error: "The signed-in workspace session is no longer active." }, 401);
+    ({ jwt: databaseAccessToken } = await client.sessions.getToken(claims.sessionId, undefined, AGENT_CREDENTIAL_TTL_SECONDS));
+  } catch {
+    return response({ error: "The signed-in workspace session is no longer active." }, 401);
+  }
+
+  try {
+    const snapshot = await loadCredentialRepositorySnapshot(claims, databaseAccessToken);
+    const { token: refreshedCredential } = await mintAgentCredential(claims);
+    return response({
+      result: runRepositoryTool(snapshot, toolName, parsedInput.data),
+      credential: refreshedCredential,
+    });
   } catch {
     return response({ error: "Could not read the scoped repository analysis." }, 503);
   }

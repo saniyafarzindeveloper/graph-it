@@ -21,8 +21,8 @@ function safeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-export async function loadCredentialRepositorySnapshot(claims: AgentCredentialClaims): Promise<RepositorySnapshot> {
-  const client = getSupabaseServerClient(claims.databaseAccessToken);
+export async function loadCredentialRepositorySnapshot(claims: AgentCredentialClaims, databaseAccessToken: string): Promise<RepositorySnapshot> {
+  const client = getSupabaseServerClient(databaseAccessToken);
   const { data: analysis, error: analysisError } = await client.from("analyses")
     .select("id,status,organization_id,framework,coverage")
     .eq("id", claims.analysisId)

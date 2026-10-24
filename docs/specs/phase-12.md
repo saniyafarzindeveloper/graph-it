@@ -83,12 +83,13 @@ development default (`http://127.0.0.1:3100`).
 
 ## Implementation decision — scoped tool access
 
-The tool-access credential is a 120-second-or-shorter nested signed and
-encrypted JWT, bound to one completed analysis and its organization. The outer
-encryption keeps the embedded Clerk session token opaque to the agent process;
-the inner signature authenticates the scope. The app's GET-only tool endpoints
-verify the credential, filter every database query by that analysis and
-organization, and use the embedded Clerk token with the Supabase publishable
-key so existing RLS policies still apply. No service-role or other
-RLS-bypassing key is present in the agent service. The agent sees the opaque
-credential only in tool closures, never the analysis or organization IDs.
+The tool-access credential is a 120-second nested signed and encrypted JWT,
+bound to one completed analysis, organization, user, and Clerk session. It
+contains the session ID rather than a short-lived session JWT. For each
+tool request, the app validates that capability and the active Clerk session,
+then asks Clerk for a fresh 120-second session JWT and uses it with the
+Supabase publishable key. This preserves Supabase RLS while allowing model
+latency before a tool call. Successful tool responses include a renewed
+scoped capability for the agent's private tool closures. The agent never sees
+the analysis or organization IDs, and no service-role or RLS-bypassing key is
+present in the agent service.

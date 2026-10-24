@@ -4,6 +4,16 @@ import { MemorySaver } from "@langchain/langgraph";
 import { createRepositoryAgent } from "./repository-agent.js";
 
 const checkpointer = new MemorySaver();
+
+function logRunFailure(error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error;
+  const cause = error instanceof Error ? error.cause : undefined;
+  const causeCode = typeof cause === "object" && cause !== null && "code" in cause && typeof cause.code === "string"
+    ? cause.code
+    : undefined;
+  console.error(`[repository-agent] run failed (${name}${causeCode ? `; cause ${causeCode}` : ""})`);
+}
+
 const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -72,6 +82,7 @@ const server = createServer(async (request, response) => {
     send("done", {});
     response.end();
   } catch (error) {
+    logRunFailure(error);
     if (!response.headersSent) {
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "The repository agent could not complete this question." }));

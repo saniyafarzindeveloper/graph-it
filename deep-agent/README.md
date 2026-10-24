@@ -4,7 +4,7 @@ A standalone Deep Agent for answering questions from one analyzed repository gra
 
 ## Current boundary
 
-The app issues an encrypted, signed, short-lived capability after confirming the signed-in user's organization can read a completed analysis. It binds exactly one analysis and organization. The embedded Clerk session JWT is encrypted inside the capability so the agent service never receives or decodes a broad organization token. The app's tool endpoints validate the capability and use that JWT through the publishable-key Supabase client, so database RLS remains in force; there is no service-role credential in the agent.
+The app issues an encrypted, signed, short-lived capability after confirming the signed-in user's organization can read a completed analysis. It binds exactly one analysis, organization, user, and Clerk session. The session identifier is encrypted inside the capability so the agent service cannot inspect it. For each tool call, the app validates the capability, asks Clerk for a fresh short-lived session JWT, and uses that JWT through the publishable-key Supabase client, so database RLS remains in force; there is no service-role credential in the agent. Successful tool responses refresh the capability for subsequent calls, while the agent keeps the replacement token inside its tool closures.
 
 Add this secret to the app's root `.env.local` (generate a fresh value with `openssl rand -base64 32`):
 
